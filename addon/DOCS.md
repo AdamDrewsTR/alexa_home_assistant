@@ -5,6 +5,10 @@ Provision AWS and Alexa with `bootstrap.py` from the repository first. Its
 
 Open **Web UI** to select entities, preview/back up/apply configuration, check
 it, and approve a restart. Existing unrelated Alexa/intent YAML is not replaced.
+Submitting shows a spinner and progress message and disables further submissions
+until the result loads. Configuration checks can take up to two minutes.
+Failures show a retry action; returning with the browser's Back button restores
+the controls.
 The dashboard reads HA's existing floor, area, device, and entity registries.
 Use room navigation, search, and entity-type filters to narrow the list.
 Device checkboxes select the visible controls and sensors on that device;
@@ -45,6 +49,15 @@ After upgrading from a per-entity setup, preview/apply and restart HA, remove
 the old individual devices in Alexa, and relink the Smart Home skill once.
 Update both the AWS relay (review/apply the Terraform plan) and connector:
 version 0.2.0 uses bounded response fragments for larger discovery results.
+Mixed relay/connector versions cannot complete commands. Publish the committed
+code to the app repository's default branch, then in **Settings > Apps > App
+store** check for updates and update this app to **0.2.1**. The wizard's
+`install-ha` command does not upgrade an already installed app.
+See the [repository upgrade instructions](../README.md#upgrading-an-existing-ha-os-installation)
+for the exact Terraform commands. Check Alexa routines referencing old devices
+after rediscovery.
+If already on 0.2.0, only the app update is needed for 0.2.1's submission feedback;
+the relay protocol and native component are unchanged.
 The new integration has its own local event-authorization storage. Subsequent
 device metadata updates/removals use native AddOrUpdateReport/DeleteReport.
 There is no parallel legacy per-entity runtime. Integration tests target HA

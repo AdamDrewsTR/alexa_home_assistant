@@ -1,5 +1,47 @@
 "use strict";
 
+let pendingForm = null;
+const disabledButtons = new Map();
+document.addEventListener("submit", event => {
+  const submitted = event.target;
+  if (!(submitted instanceof HTMLFormElement) || submitted.method.toLowerCase() !== "post") return;
+  if (pendingForm) {
+    event.preventDefault();
+    return;
+  }
+  pendingForm = submitted;
+  submitted.setAttribute("aria-busy", "true");
+  const action = submitted.elements.namedItem("action")?.value;
+  const messages = {
+    preview: "Preparing configuration preview...",
+    "apply-config": "Saving backups and checking Home Assistant configuration. This can take up to two minutes...",
+    "restart-ha": "Checking configuration and requesting a Home Assistant restart...",
+    approve: "Submitting account approval...",
+    revoke: "Revoking account access...",
+  };
+  for (const button of document.querySelectorAll("button")) {
+    if (button.type !== "submit") continue;
+    disabledButtons.set(button, button.disabled);
+    button.disabled = true;
+  }
+  const button = event.submitter || submitted.querySelector("button");
+  if (button) button.classList.add("is-loading");
+  const status = document.createElement("p");
+  status.className = "submission-status";
+  status.setAttribute("role", "status");
+  status.textContent = messages[action] || "Submitting...";
+  submitted.append(status);
+});
+window.addEventListener("pageshow", event => {
+  if (!event.persisted || !pendingForm) return;
+  pendingForm.removeAttribute("aria-busy");
+  pendingForm.querySelector(".submission-status")?.remove();
+  pendingForm.querySelector(".is-loading")?.classList.remove("is-loading");
+  for (const [button, disabled] of disabledButtons) button.disabled = disabled;
+  disabledButtons.clear();
+  pendingForm = null;
+});
+
 const form = document.querySelector("#entity-form");
 if (form) {
   const rows = [...form.querySelectorAll(".entity-row")];
@@ -12,6 +54,7 @@ if (form) {
   let currentFloor = null;
 
   function update() {
+    if (pendingForm) return;
     const query = search.value.trim().toLocaleLowerCase();
     let visible = 0;
     let selected = 0;
@@ -108,11 +151,6 @@ if (form) {
   search.addEventListener("input", update);
   domain.addEventListener("change", update);
   selectedOnly.addEventListener("change", update);
-  form.addEventListener("submit", () => {
-    const button = form.querySelector("button[type=submit]");
-    button.disabled = true;
-    button.textContent = "Preparing preview...";
-  });
   window.addEventListener("pageshow", update);
   update();
 }
@@ -136,7 +174,7 @@ if (requests) {
       connection.classList.toggle("offline", !state.connected);
       document.querySelector("#connection-label").textContent = state.connected ? "Relay connected" : "Relay disconnected";
       const signature = JSON.stringify([state.links, state.grants]);
-      if (signature !== previous) {
+      if (signature !== previous && !pendingForm) {
         requests.replaceChildren();
         for (const [action, items] of [["approve", state.links], ["revoke", state.grants]]) {
           for (const item of items) {

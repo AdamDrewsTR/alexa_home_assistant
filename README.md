@@ -90,6 +90,38 @@ remain independent endpoints. See [app documentation](addon/DOCS.md) for limits.
 The custom integration is tested against HA 2026.10.3 and depends on internal
 HA Alexa APIs; compatibility must be checked on HA upgrades.
 
+### Upgrading an existing HA OS installation
+
+Publish the committed changes to your app repository's default branch first
+(`git push` for a checkout already on that branch). Use the same AWS credentials
+or profile and Terraform state as the existing deployment:
+
+```sh
+terraform plan -var-file=.setup/relay.tfvars.json -out=.setup/native-endpoints.tfplan
+# Review the plan before approving:
+terraform apply .setup/native-endpoints.tfplan
+```
+
+Update both sides: the relay and connector use a new bounded response-fragment
+protocol for large discovery responses. A mixed-version deployment cannot
+complete commands.
+
+In HA, open **Settings > Apps > App store**, check for updates, and update
+**Alexa Outbound Connector** to **0.2.1**. Open its Web UI, select devices,
+preview/back up/apply configuration, and approve the HA restart only after
+validation passes. Confirm **Native device endpoints active** after startup.
+Remove the old individual Alexa devices, disable/re-enable and relink the
+Smart Home development skill, approve the matching code locally, and discover
+devices again. Check routines referencing old devices. Existing skills and
+credentials can be reused.
+
+`wizard.py install-ha` currently configures and starts/restarts an installed
+app; it does **not** upgrade it. Use HA's app update action for this step.
+No update, cloud apply, HA restart, or relinking happens just by pulling code.
+If already running 0.2.0, update only the connector app to get the submission
+spinner and duplicate-click protection; no new cloud apply or relinking is
+needed for that UI-only patch.
+
 **Account consent cannot be skipped.** In the Alexa app, enable/link each
 development skill, then compare the displayed code with the local connector's
 pending request and click Approve. This also works if Alexa is on your phone

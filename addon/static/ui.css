@@ -12,6 +12,11 @@ button, a, input, select { -webkit-tap-highlight-color: transparent; }
 button { cursor: pointer; color: inherit; border: 1px solid var(--line); border-radius: 10px; background: #1c2838; padding: 10px 16px; font-weight: 600; }
 button:hover { background: #29394d; }
 button:disabled { opacity: .45; cursor: not-allowed; }
+button.is-loading { opacity: 1; cursor: wait; }
+button.is-loading::before { content: ""; display: inline-block; width: 14px; height: 14px; margin-right: 8px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -2px; animation: submission-spin .8s linear infinite; }
+.submission-status { color: var(--accent); font-size: 12px; margin-top: 12px; flex-basis: 100%; }
+@keyframes submission-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { button.is-loading::before { animation: none; } }
 a { color: var(--accent); }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 input[type=checkbox] { accent-color: var(--accent); width: 17px; height: 17px; flex-shrink: 0; cursor: pointer; }
