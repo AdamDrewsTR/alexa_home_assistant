@@ -66,7 +66,7 @@ class NativeDeviceTests(unittest.IsolatedAsyncioTestCase):
                "entity_ids": {key: entry.id for key, entry in self.entries.items()},
                "client_id": "test-client", "client_secret": "test-secret",
                "endpoint": "https://api.amazonalexa.com/v3/events"}
-        CONFIG_SCHEMA({"alexa_devices": raw})
+        CONFIG_SCHEMA({"alexa_device_endpoints": raw})
         self.config = DeviceConfig(self.hass, raw)
         await self.config.async_initialize()
         self.view = DeviceView(self.config)
@@ -244,18 +244,22 @@ class NativeDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len({endpoint["endpointId"] for endpoint in endpoints}), len(samples))
 
     async def test_installed_component_loads_validates_and_registers_authenticated_views(self):
-        target = Path(self.temp.name) / "custom_components/alexa_devices"
+        target = Path(self.temp.name) / "custom_components/alexa_device_endpoints"
         shutil.copytree(Path(__file__).resolve().parents[2] / "addon/device_component", target)
         loader.async_setup(self.hass)
         self.hass.http = Mock()
         self.hass.config_entries.async_entries.return_value = []
-        raw = {"alexa": {}, "alexa_devices": {"filter": {"include_entities": ["light.example"]}}}
+        raw = {"alexa": {}, "alexa_device_endpoints": {"filter": {"include_entities": ["light.example"]}}}
+        integration = await loader.async_get_integration(self.hass, "alexa_device_endpoints")
+        builtin = await loader.async_get_integration(self.hass, "alexa_devices")
+        self.assertEqual(integration.pkg_path, "custom_components.alexa_device_endpoints")
+        self.assertEqual(builtin.pkg_path, "homeassistant.components.alexa_devices")
         with patch("homeassistant.setup.async_process_deps_reqs", new_callable=AsyncMock):
-            self.assertTrue(await async_setup_component(self.hass, "alexa_devices", raw))
+            self.assertTrue(await async_setup_component(self.hass, "alexa_device_endpoints", raw))
         views = [call.args[0] for call in self.hass.http.register_view.call_args_list]
-        self.assertEqual({view.url for view in views}, {"/api/alexa/smart_home", "/api/alexa_devices"})
+        self.assertEqual({view.url for view in views}, {"/api/alexa/smart_home", "/api/alexa_device_endpoints"})
         self.assertTrue(all(view.requires_auth for view in views))
-        self.assertIn("alexa_devices", self.hass.config.components)
+        self.assertIn("alexa_device_endpoints", self.hass.config.components)
 
     async def test_real_metadata_and_state_event_http_delivery_preserve_bundled_identity(self):
         self.add_entity("switch.plug", "on")

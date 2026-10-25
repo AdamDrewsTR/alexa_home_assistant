@@ -133,7 +133,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(selected_entities(root), [])
             apply(root, generate(root, ["light.reading", "sensor.temperature"]))
             self.assertEqual(selected_entities(root), ["light.reading", "sensor.temperature"])
-            path = root / "alexa_devices.yaml"
+            path = root / "alexa_device_endpoints.yaml"
             path.write_text(path.read_text().replace("include_entities:", "exclude_entities:"))
             with self.assertRaisesRegex(ValueError, "Cannot read selected"):
                 selected_entities(root)

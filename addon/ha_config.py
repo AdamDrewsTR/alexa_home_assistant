@@ -12,13 +12,15 @@ from ruamel.yaml.error import YAMLError
 
 
 MARKER = "# Managed by ha-alexa setup; edit entity selection through setup.\n"
-COMPONENT = Path("custom_components/alexa_devices")
+COMPONENT = Path("custom_components/alexa_device_endpoints")
 COMPONENT_FILES = ("__init__.py", "bundles.py", "manifest.json")
 
 
 def selected_entities(directory, registry_entities=()):
     directory = Path(directory)
-    path = directory / "alexa_devices.yaml"
+    path = directory / "alexa_device_endpoints.yaml"
+    if not path.exists():
+        path = directory / "alexa_devices.yaml"
     bundled = path.exists()
     if not bundled:
         path = directory / "alexa_bridge.yaml"
@@ -75,7 +77,15 @@ def generate(directory, entities, locale="en-US", custom_skill=None, event_crede
         config = {}
     if not isinstance(config, dict):
         raise ValueError("configuration.yaml must contain a mapping")
-    desired = {"alexa": "alexa_bridge.yaml", "alexa_devices": "alexa_devices.yaml"}
+    if "alexa_devices" in config:
+        old = config["alexa_devices"]
+        old_file = directory / "alexa_devices.yaml"
+        if not (isinstance(old, TaggedScalar) and str(old.tag) == "!include"
+                and str(old) == "alexa_devices.yaml" and old_file.is_file()
+                and old_file.read_text().startswith(MARKER)):
+            raise ValueError("Existing alexa_devices: configuration needs manual integration; no files changed")
+        del config["alexa_devices"]
+    desired = {"alexa": "alexa_bridge.yaml", "alexa_device_endpoints": "alexa_device_endpoints.yaml"}
     if custom_skill:
         desired["intent_script"] = "alexa_bridge_intents.yaml"
     for key, filename in desired.items():
@@ -102,13 +112,13 @@ def generate(directory, entities, locale="en-US", custom_skill=None, event_crede
         smart["entity_ids"] = {key: value for key, value in entity_ids.items() if key in entities}
     # Built-in Alexa remains responsible for Custom intents, not Smart Home.
     files = {"alexa_bridge.yaml": MARKER + "{}\n",
-             "alexa_devices.yaml": MARKER + render(yaml, smart)}
+             "alexa_device_endpoints.yaml": MARKER + render(yaml, smart)}
     source = Path(__file__).parent / "device_component"
     target = directory / COMPONENT
     if target.exists():
         marker = target / "__init__.py"
         if not marker.exists() or not marker.read_text().startswith(MARKER):
-            raise ValueError("Existing alexa_devices custom component is not owned by this tool")
+            raise ValueError("Existing alexa_device_endpoints custom component is not owned by this tool")
     for name in COMPONENT_FILES:
         files[str(COMPONENT / name)] = (source / name).read_text()
     if custom_skill:
@@ -135,6 +145,19 @@ def apply(directory, files):
     directory = Path(directory)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     backups = {}
+    old_component = directory / "custom_components/alexa_devices"
+    retired = directory / f"alexa_devices.alexa-backup-{stamp}"
+    existing_config = YAML().load((directory / "configuration.yaml").read_text()) or {}
+    old_include = existing_config.get("alexa_devices") if isinstance(existing_config, dict) else None
+    retire = (str(COMPONENT / "__init__.py") in files and old_component.exists()
+              and isinstance(old_include, TaggedScalar) and str(old_include.tag) == "!include"
+              and str(old_include) == "alexa_devices.yaml")
+    if retire:
+        marker = old_component / "__init__.py"
+        if (old_component.is_symlink() or old_component.parent.is_symlink()
+                or marker.is_symlink() or not marker.is_file()
+                or not marker.read_text().startswith(MARKER)):
+            raise ValueError("Old alexa_devices custom component is not owned by this tool or uses symlinks")
     for name in files:
         if Path(name).name != name and name not in {str(COMPONENT / part) for part in COMPONENT_FILES}:
             raise ValueError("Only configuration files and the owned Alexa component may be changed")
@@ -152,6 +175,8 @@ def apply(directory, files):
     try:
         for name in sorted(files, key=lambda name: name == "configuration.yaml"):
             atomic_write(directory / name, files[name])
+        if retire:
+            os.replace(old_component, retired)
     except OSError:
         for name in files:
             if name in backups:

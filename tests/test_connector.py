@@ -44,6 +44,18 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         await self.connector.dispatch({"id": "a" * 32, "path": "/api/services/lock/unlock"}, AsyncMock())
         self.connector.ha.assert_not_awaited()
 
+    async def test_old_domain_saved_preview_cannot_be_applied_after_upgrade(self):
+        self.connector.plan_path.write_text(json.dumps({
+            "files": {"alexa_devices.yaml": "old configuration"}, "applied": True,
+        }))
+        with self.assertLogs("ha-alexa.connector", level="WARNING"):
+            restarted = Connector({}, self.temp.name)
+        try:
+            self.assertIsNone(restarted.config_plan)
+            self.assertTrue(restarted.plan_path.exists())
+        finally:
+            restarted.db.close()
+
     async def test_discovery_response_fragments_stay_bounded_and_reassemble_without_loss(self):
         socket = AsyncMock()
         socket.closed = False

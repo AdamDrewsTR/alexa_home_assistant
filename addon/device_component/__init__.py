@@ -31,7 +31,7 @@ from homeassistant.helpers.storage import Store
 
 from .bundles import Bundle, stable_id
 
-DOMAIN = "alexa_devices"
+DOMAIN = "alexa_device_endpoints"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -40,14 +40,14 @@ def CONFIG_SCHEMA(config):
         value = config[DOMAIN]
         if (not isinstance(value, dict) or not isinstance(value.get("filter"), dict)
                 or not value["filter"].get("include_entities")):
-            raise ValueError("alexa_devices requires an explicit nonempty include_entities filter")
+            raise ValueError("alexa_device_endpoints requires an explicit nonempty include_entities filter")
         # Use HA's own schema, including its locale, credential, and event-gateway validation.
         SMART_HOME_SCHEMA({key: item for key, item in value.items() if key != "entity_ids"})
         identities = value.get("entity_ids", {})
         if not isinstance(identities, dict) or not all(
             isinstance(key, str) and isinstance(item, str) for key, item in identities.items()
         ):
-            raise ValueError("alexa_devices entity_ids must map entity IDs to registry IDs")
+            raise ValueError("alexa_device_endpoints entity_ids must map entity IDs to registry IDs")
     return config
 
 
@@ -297,7 +297,7 @@ class DeviceConfig(AbstractConfig):
 
 class DeviceView(HomeAssistantView):
     url = "/api/alexa/smart_home"
-    name = "api:alexa_devices"
+    name = "api:alexa_device_endpoints"
 
     def __init__(self, config):
         self.config = config
@@ -382,8 +382,8 @@ class DeviceView(HomeAssistantView):
 
 
 class DeviceStatusView(HomeAssistantView):
-    url = "/api/alexa_devices"
-    name = "api:alexa_devices:status"
+    url = "/api/alexa_device_endpoints"
+    name = "api:alexa_device_endpoints:status"
 
     def __init__(self, config):
         self.config = config
@@ -400,7 +400,7 @@ class DeviceStatusView(HomeAssistantView):
 
 async def async_setup(hass, config):
     if "smart_home" in (config.get("alexa") or {}):
-        LOGGER.error("Remove built-in alexa.smart_home before enabling alexa_devices; both own the same API")
+        LOGGER.error("Remove built-in alexa.smart_home before enabling alexa_device_endpoints; both own the same API")
         return False
     settings = DeviceConfig(hass, config[DOMAIN])
     await settings.async_initialize()

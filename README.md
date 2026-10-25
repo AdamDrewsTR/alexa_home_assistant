@@ -3,7 +3,7 @@
 Terraform-managed AWS bridges using Home Assistant's native
 [Alexa Smart Home](https://www.home-assistant.io/integrations/alexa.smart_home/)
 and [Alexa Custom Skill](https://www.home-assistant.io/integrations/alexa.intent/)
-capabilities, with a local `alexa_devices` integration that presents physical
+capabilities, with a local `alexa_device_endpoints` integration that presents physical
 devices as bundled Alexa endpoints.
 
 - **Smart Home:** "Alexa, turn on the kitchen light", discovery, state queries,
@@ -82,7 +82,7 @@ HA's native adapters, including lights, plugs, locks, alarms, garage doors,
 covers, climate, fans, media, and supported sensors; Alexa's capability/region
 limits and HA's PIN/security rules still apply.
 
-Setup previews and installs `custom_components/alexa_devices` alongside the
+Setup previews and installs `custom_components/alexa_device_endpoints` alongside the
 owned YAML, with backups. It replaces managed per-entity Smart Home configuration,
 not unrelated integrations. After migrating, restart HA, remove old individual
 Alexa devices, and relink once. Scenes/scripts, cameras, and unassigned entities
@@ -107,7 +107,7 @@ protocol for large discovery responses. A mixed-version deployment cannot
 complete commands.
 
 In HA, open **Settings > Apps > App store**, check for updates, and update
-**Alexa Outbound Connector** to **0.2.1**. Open its Web UI, select devices,
+**Alexa Outbound Connector** to **0.2.2**. Open its Web UI, select devices,
 preview/back up/apply configuration, and approve the HA restart only after
 validation passes. Confirm **Native device endpoints active** after startup.
 Remove the old individual Alexa devices, disable/re-enable and relink the
@@ -118,9 +118,16 @@ credentials can be reused.
 `wizard.py install-ha` currently configures and starts/restarts an installed
 app; it does **not** upgrade it. Use HA's app update action for this step.
 No update, cloud apply, HA restart, or relinking happens just by pulling code.
-If already running 0.2.0, update only the connector app to get the submission
-spinner and duplicate-click protection; no new cloud apply or relinking is
-needed for that UI-only patch.
+The 0.2.1 patch added a submission spinner and duplicate-click protection.
+Version 0.2.2 fixes a collision with HA's built-in `alexa_devices` integration.
+If HA says that integration does not support YAML, update the app, create a
+**new preview**, apply it, validate, and restart HA. Setup replaces only the
+tool-owned old include with `alexa_device_endpoints` and moves the old owned
+component directory outside `custom_components` into a timestamped backup.
+Old previews cannot be reused. No Terraform update is needed for this fix.
+If the old endpoint runtime had already been linked, relink after the rename
+and remove its old Alexa devices; the integration's local identity/auth store
+uses the new domain.
 
 **Account consent cannot be skipped.** In the Alexa app, enable/link each
 development skill, then compare the displayed code with the local connector's
@@ -318,7 +325,7 @@ client ID.
 ## 4. Configure Home Assistant and custom intents
 
 Copy the three files from `addon/device_component/` into
-`<HA config>/custom_components/alexa_devices/` first. Remove an existing
+`<HA config>/custom_components/alexa_device_endpoints/` first. Remove an existing
 `alexa.smart_home` block; the bundled integration owns that API.
 Merge [examples/home-assistant.yaml](examples/home-assistant.yaml) into your
 configuration, replacing the example entities. Keep the explicit allowlist:

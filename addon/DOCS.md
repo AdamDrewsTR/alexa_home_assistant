@@ -18,7 +18,7 @@ filtering does not silently remove selections. No entities are preselected on
 first setup. Account-linking requests update without reloading your selections.
 
 **One physical device becomes one native Alexa endpoint.** Setup installs the
-`alexa_devices` custom integration inside HA, which composes HA's native Alexa
+`alexa_device_endpoints` custom integration inside HA, which composes HA's native Alexa
 capabilities and handlers without patching HA. Selected controls and supported
 sensors belonging to the same HA device share discovery, control, state queries,
 and proactive state reporting. Endpoint IDs survive restarts and renames;
@@ -51,13 +51,20 @@ Update both the AWS relay (review/apply the Terraform plan) and connector:
 version 0.2.0 uses bounded response fragments for larger discovery results.
 Mixed relay/connector versions cannot complete commands. Publish the committed
 code to the app repository's default branch, then in **Settings > Apps > App
-store** check for updates and update this app to **0.2.1**. The wizard's
+store** check for updates and update this app to **0.2.2**. The wizard's
 `install-ha` command does not upgrade an already installed app.
 See the [repository upgrade instructions](../README.md#upgrading-an-existing-ha-os-installation)
 for the exact Terraform commands. Check Alexa routines referencing old devices
 after rediscovery.
-If already on 0.2.0, only the app update is needed for 0.2.1's submission feedback;
-the relay protocol and native component are unchanged.
+The 0.2.1 patch added submission feedback without changing the relay protocol.
+Version 0.2.2 renames our YAML integration to `alexa_device_endpoints`, avoiding
+HA's built-in `alexa_devices` integration. For a "does not support YAML" error,
+update the app, create a new preview, apply, validate, and restart HA. The old
+tool-owned include is migrated and the old owned component directory is moved
+outside `custom_components` to a timestamped backup. Unowned configuration is
+never replaced. This fix needs no Terraform apply. Relink if the old endpoint
+runtime had already been linked, because the integration's identity/auth store
+now uses the new domain.
 The new integration has its own local event-authorization storage. Subsequent
 device metadata updates/removals use native AddOrUpdateReport/DeleteReport.
 There is no parallel legacy per-entity runtime. Integration tests target HA

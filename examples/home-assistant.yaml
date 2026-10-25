@@ -1,9 +1,9 @@
-# Prefer the wizard: it installs custom_components/alexa_devices with backups.
+# Prefer the wizard: it installs custom_components/alexa_device_endpoints with backups.
 # This manual example requires that component to be installed first.
 # Merge into configuration.yaml; do not duplicate existing blocks.
 # Do not configure alexa.smart_home at the same time.
 alexa: {}
-alexa_devices:
+alexa_device_endpoints:
   locale: en-US
   filter:
     include_entities:

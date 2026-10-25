@@ -56,6 +56,9 @@ class Connector:
         self.ready = False
         self.plan_path = self.data_dir / "configuration-plan.json"
         self.config_plan = json.loads(self.plan_path.read_text()) if self.plan_path.exists() else None
+        if self.config_plan and "alexa_devices.yaml" in self.config_plan["files"]:
+            LOGGER.warning("Saved preview uses the retired alexa_devices domain; create a new configuration preview")
+            self.config_plan = None
         self.configuration_lock = asyncio.Lock()
 
     def redact(self, text):
@@ -99,7 +102,7 @@ class Connector:
                             if response.status == 404 and path in ("/api/alexa", "/api/alexa/smart_home")
                             else "")
                     raise HAError(f"Home Assistant {method} {path} HTTP {response.status}{hint}", response.status)
-                limit = 4_000_000 if method == "GET" and path in ("/api/states", "/api/alexa_devices") else MAX_RESPONSE
+                limit = 4_000_000 if method == "GET" and path in ("/api/states", "/api/alexa_device_endpoints") else MAX_RESPONSE
                 raw = bytearray()
                 async for chunk in response.content.iter_chunked(8192):
                     raw.extend(chunk)
@@ -300,6 +303,9 @@ class Connector:
                 content = "<h1>Review configuration</h1>"
                 content += ("<p>Selected entities on the same physical HA device become one Alexa endpoint. "
                             "This installs the local Alexa Device Endpoints integration. Restart HA after validation.</p>"
+                            "<p>Any previous tool-owned alexa_devices YAML include is migrated. Its old custom "
+                            "component directory is moved out of custom_components into a timestamped "
+                            "alexa_devices.alexa-backup directory, avoiding Home Assistant's built-in integration.</p>"
                             "<p>When migrating from separate Alexa entities, remove the old devices in Alexa and "
                             "relink the Smart Home skill once. Rooms remain managed in Alexa.</p>")
                 for name, value in files.items():
@@ -394,7 +400,7 @@ class Connector:
                 except (ValueError, OSError) as error:
                     warnings.append(self.redact(str(error)))
                 try:
-                    endpoint_status = await self.ha("GET", "/api/alexa_devices")
+                    endpoint_status = await self.ha("GET", "/api/alexa_device_endpoints")
                     if not isinstance(endpoint_status, dict) or not isinstance(endpoint_status.get("devices"), list):
                         raise ValueError("Invalid native endpoint status response")
                     registry["supported_domains"] = endpoint_status["supported_domains"]
