@@ -1,0 +1,10 @@
+{
+  "domain": "alexa_devices",
+  "name": "Alexa Device Endpoints",
+  "version": "0.2.0",
+  "dependencies": ["alexa"],
+  "codeowners": [],
+  "documentation": "https://www.home-assistant.io/integrations/alexa.smart_home/",
+  "integration_type": "service",
+  "iot_class": "cloud_push"
+}

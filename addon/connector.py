@@ -27,6 +27,14 @@ else:
 
 LOGGER = logging.getLogger("ha-alexa.connector")
 MAX_MESSAGE = 28_000
+MAX_RESPONSE = 256_000
+RESPONSE_CHUNK = 12_000
+
+
+class HAError(RuntimeError):
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
 
 
 class Connector:
@@ -90,8 +98,8 @@ class Connector:
                     hint = ("; Alexa endpoint is not loaded: validate configuration and restart HA"
                             if response.status == 404 and path in ("/api/alexa", "/api/alexa/smart_home")
                             else "")
-                    raise RuntimeError(f"Home Assistant {method} {path} HTTP {response.status}{hint}")
-                limit = 4_000_000 if method == "GET" and path == "/api/states" else MAX_MESSAGE
+                    raise HAError(f"Home Assistant {method} {path} HTTP {response.status}{hint}", response.status)
+                limit = 4_000_000 if method == "GET" and path in ("/api/states", "/api/alexa_devices") else MAX_RESPONSE
                 raw = bytearray()
                 async for chunk in response.content.iter_chunked(8192):
                     raw.extend(chunk)
@@ -186,13 +194,18 @@ class Connector:
                 detail = self.redact(str(error)) or type(error).__name__
                 LOGGER.error("HA command %s failed: %s", message["path"], detail)
                 result = {"status": 502}
-            encoded = json.dumps({"action": "response", "id": request_id, "body": result})
-            if len(encoded.encode()) > MAX_MESSAGE:
-                LOGGER.error("Response too large; reduce the exposed entity list")
-                encoded = json.dumps({"action": "response", "id": request_id,
-                                      "body": {"status": 413}})
-            if not socket.closed:
-                await socket.send_str(encoded)
+            raw = json.dumps(result)
+            if len(raw) > MAX_RESPONSE:
+                LOGGER.error("HA response exceeds Alexa's response-size limit")
+                raw = json.dumps({"status": 413})
+            for index, offset in enumerate(range(0, len(raw), RESPONSE_CHUNK)):
+                if socket.closed:
+                    break
+                await socket.send_str(json.dumps({
+                    "action": "response", "id": request_id, "index": index,
+                    "total": (len(raw) + RESPONSE_CHUNK - 1) // RESPONSE_CHUNK,
+                    "data": raw[offset:offset + RESPONSE_CHUNK],
+                }))
 
     def completed(self, task):
         self.tasks.discard(task)
@@ -274,16 +287,26 @@ class Connector:
         action = data.get("action")
         try:
             if action == "preview":
+                registry = await self.registries()
+                entity_ids = {item["entity_id"]: item["id"] for item in registry["entities"] if item.get("id")}
                 files = generate("/homeassistant", data.getall("entity", []),
                                  self.config.get("locale", "en-US"),
                                  self.config.get("custom_skill_id") or None,
-                                 self.config.get("event_credentials") or None)
+                                 self.config.get("event_credentials") or None,
+                                 entity_ids=entity_ids)
                 self.config_plan = {"files": files, "fingerprints": self.fingerprints(files),
                                     "id": secrets.token_urlsafe(24), "applied": False}
                 atomic_write(self.plan_path, json.dumps(self.config_plan))
                 content = "<h1>Review configuration</h1>"
+                content += ("<p>Selected entities on the same physical HA device become one Alexa endpoint. "
+                            "This installs the local Alexa Device Endpoints integration. Restart HA after validation.</p>"
+                            "<p>When migrating from separate Alexa entities, remove the old devices in Alexa and "
+                            "relink the Smart Home skill once. Rooms remain managed in Alexa.</p>")
                 for name, value in files.items():
-                    content += f"<h2>{html.escape(name)}</h2><pre>{html.escape(self.redact(value))}</pre>"
+                    if name.startswith("custom_components/"):
+                        content += f"<details><summary>{html.escape(name)}</summary><pre>{html.escape(value)}</pre></details>"
+                    else:
+                        content += f"<h2>{html.escape(name)}</h2><pre>{html.escape(self.redact(value))}</pre>"
                 content += self.form("apply-config", "Back up and apply configuration", self.config_plan["id"])
                 return self.page(content)
             if action == "apply-config":
@@ -354,6 +377,7 @@ class Connector:
         if self.config_plan and self.config_plan.get("applied"):
             configuration = self.form("apply-config", "Check applied configuration", self.config_plan["id"])
         states, registry, selected, warnings = [], {}, [], []
+        endpoint_status = None
         if self.config.get("supervisor_ingress"):
             try:
                 states = await self.ha("GET", "/api/states")
@@ -366,16 +390,30 @@ class Connector:
                     warnings.append("Room and device information unavailable; entities are shown unassigned. " +
                                     (self.redact(str(error)) or type(error).__name__))
                 try:
-                    selected = selected_entities("/homeassistant")
+                    selected = selected_entities("/homeassistant", registry.get("entities", []))
                 except (ValueError, OSError) as error:
                     warnings.append(self.redact(str(error)))
+                try:
+                    endpoint_status = await self.ha("GET", "/api/alexa_devices")
+                    if not isinstance(endpoint_status, dict) or not isinstance(endpoint_status.get("devices"), list):
+                        raise ValueError("Invalid native endpoint status response")
+                    registry["supported_domains"] = endpoint_status["supported_domains"]
+                except HAError as error:
+                    if error.status != 404:
+                        warnings.append("Could not load native endpoint status: " + self.redact(str(error)))
+                    else:
+                        warnings.append("Native endpoints are not loaded yet. Preview/apply configuration and restart HA.")
+                    endpoint_status = None
+                except (aiohttp.ClientError, TimeoutError, RuntimeError, ValueError, KeyError) as error:
+                    warnings.append("Could not load native endpoint status: " + self.redact(str(error)))
+                    endpoint_status = None
         else:
             warnings.append("For Docker/standalone installations, manage entity selection with configure-ha locally.")
         if warnings:
             LOGGER.warning("Dashboard: %s", " ".join(warnings))
         return web.Response(
             text=dashboard(states, registry, selected, self.csrf, self.ready, self.links, self.grants,
-                           configuration, " ".join(warnings)),
+                           configuration, " ".join(warnings), endpoint_status),
             content_type="text/html", headers=self.page_headers(),
         )
 

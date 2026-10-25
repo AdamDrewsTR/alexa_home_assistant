@@ -16,6 +16,7 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.connector = Connector({}, self.temp.name)
+        self.connector.registries = AsyncMock(return_value={"entities": [], "devices": [], "areas": [], "floors": []})
         self.addCleanup(self.connector.db.close)
 
     async def test_command_forwarding_and_persistent_duplicate_protection(self):
@@ -28,7 +29,7 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         await self.connector.dispatch(request, socket)
         self.connector.ha.assert_awaited_once_with("POST", "/api/alexa/smart_home", request["event"])
         response = json.loads(socket.send_str.call_args.args[0])
-        self.assertEqual(response["body"]["status"], 200)
+        self.assertEqual(json.loads(response["data"])["status"], 200)
         # A restarted connector must also refuse the uncertain duplicate.
         restarted = Connector({}, self.temp.name)
         try:
@@ -42,6 +43,25 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         self.connector.ha = AsyncMock()
         await self.connector.dispatch({"id": "a" * 32, "path": "/api/services/lock/unlock"}, AsyncMock())
         self.connector.ha.assert_not_awaited()
+
+    async def test_discovery_response_fragments_stay_bounded_and_reassemble_without_loss(self):
+        socket = AsyncMock()
+        socket.closed = False
+        result = {"event": {"payload": {"endpoints": [
+            {"endpointId": f"device-{index}", "friendlyName": "Kitchen \u2600 \"light\"",
+             "capabilities": ["Alexa.PowerController"] * 12} for index in range(180)
+        ]}}}
+        self.connector.ha = AsyncMock(return_value=result)
+        await self.connector.dispatch(
+            {"id": "b" * 32, "path": "/api/alexa/smart_home", "event": {}}, socket)
+        frames = [json.loads(call.args[0]) for call in socket.send_str.call_args_list]
+        self.assertGreater(len(frames), 1)
+        self.assertTrue(all(len(call.args[0].encode()) <= 28_000
+                            for call in socket.send_str.call_args_list))
+        self.assertEqual(json.loads("".join(frame["data"] for frame in frames)),
+                         {"status": 200, "body": result})
+        self.assertEqual([frame["index"] for frame in frames], list(range(len(frames))))
+        self.assertTrue(all(frame["total"] == len(frames) for frame in frames))
 
     async def test_local_ui_requires_trusted_source_and_csrf(self):
         request = make_mocked_request("POST", "/", headers={})

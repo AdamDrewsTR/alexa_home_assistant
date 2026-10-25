@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ha-alexa-setup"
-version = "0.1.1"
+version = "0.2.0"
 description = "Self-managed Alexa relay and Home Assistant setup"
 requires-python = ">=3.11"
 dependencies = [
@@ -25,4 +25,4 @@ py-modules = ["wizard"]
 packages = ["addon"]
 
 [tool.setuptools.package-data]
-addon = ["static/*.css", "static/*.js"]
+addon = ["static/*.css", "static/*.js", "device_component/*.py", "device_component/*.json"]

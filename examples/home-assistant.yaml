@@ -1,15 +1,21 @@
-# Merge into configuration.yaml; do not add a second alexa: block.
-alexa:
-  smart_home:
-    locale: en-US
-    filter:
-      include_entities:
-        - light.kitchen
-        - script.good_night
-    # Optional proactive state reporting; enable Send Alexa Events first.
-    # endpoint: https://api.amazonalexa.com/v3/events
-    # client_id: !secret alexa_event_client_id
-    # client_secret: !secret alexa_event_client_secret
+# Prefer the wizard: it installs custom_components/alexa_devices with backups.
+# This manual example requires that component to be installed first.
+# Merge into configuration.yaml; do not duplicate existing blocks.
+# Do not configure alexa.smart_home at the same time.
+alexa: {}
+alexa_devices:
+  locale: en-US
+  filter:
+    include_entities:
+      - light.kitchen
+      - sensor.kitchen_temperature
+      - lock.front_door
+      - script.good_night
+  # Selected entities on the same physical HA device share an Alexa endpoint.
+  # Enable Send Alexa Events and use the Smart Home skill's event credentials.
+  endpoint: https://api.amazonalexa.com/v3/events
+  client_id: !secret alexa_event_client_id
+  client_secret: !secret alexa_event_client_secret
 
 intent_script:
   HomeStatusIntent:

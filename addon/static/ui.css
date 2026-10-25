@@ -103,6 +103,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .device-heading > div { min-width: 0; }
 .device-heading h4 { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .device-heading p { color: var(--muted); font-size: 10px; margin-top: 2px; }
+.device-heading .endpoint-label { color: var(--accent); font-size: 9px; margin-top: 5px; }
 .device-icon { width: 37px; height: 37px; color: var(--blue); border: 1px solid #36465e; background: #223047; border-radius: 11px; }
 .device-icon svg { width: 21px; height: 21px; }
 .device-select { margin-left: auto; }

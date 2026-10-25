@@ -6,7 +6,10 @@ from html import escape
 
 DOMAINS = {
     "light", "switch", "script", "scene", "climate", "fan", "cover",
-    "sensor", "binary_sensor", "media_player", "vacuum",
+    "sensor", "binary_sensor", "media_player", "vacuum", "lock",
+    "alarm_control_panel", "camera", "humidifier", "water_heater", "valve",
+    "number", "input_number", "input_boolean", "button", "input_button",
+    "remote", "event", "timer", "automation", "group", "alert", "image_processing",
 }
 
 ICONS = {
@@ -20,6 +23,9 @@ ICONS = {
     "fan": "M12 12c-8-7 2-14 3-7 1 4-3 7-3 7Zm0 0c10-3 10 9 3 7-4-1-3-7-3-7Zm0 0c-2 10-12 4-7 0 3-3 7 0 7 0Z",
     "scene": "m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z",
     "device": "M5 3h14v18H5Zm4 14h6",
+    "lock": "M5 10h14v11H5Zm3 0V6a4 4 0 0 1 8 0v4m-4 4v3",
+    "alarm_control_panel": "m12 2 8 4v6c0 5-8 10-8 10S4 17 4 12V6Zm0 5v6m0 4h.01",
+    "camera": "M3 6h13v12H3Zm13 4 5-3v10l-5-3",
     "search": "M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm6-2 6 6",
     "arrow": "M4 12h16m-6-6 6 6-6 6",
     "check": "m5 12 4 4L19 6",
@@ -42,11 +48,15 @@ def document(content, csrf=""):
 
 
 def organize(states, registry, selected=()):
-    """Entity area overrides device area; devices keep all their related entities."""
+    """Keep physical devices in one area so UI cards match Alexa endpoint identity."""
     entities = {item["entity_id"]: item for item in registry.get("entities", [])}
     devices = {item["id"]: item for item in registry.get("devices", [])}
     areas = {item["area_id"]: item for item in registry.get("areas", [])}
     floors = {item["floor_id"]: item for item in registry.get("floors", [])}
+    device_areas = {item["id"]: item["area_id"] for item in devices.values() if item.get("area_id")}
+    for entity in sorted(entities.values(), key=lambda item: item["entity_id"]):
+        if entity.get("device_id") and entity.get("area_id"):
+            device_areas.setdefault(entity["device_id"], entity["area_id"])
     selected = set(selected)
     states = list(states)
     present = {state["entity_id"] for state in states}
@@ -57,10 +67,10 @@ def organize(states, registry, selected=()):
         entity_id = state["entity_id"]
         domain = entity_id.split(".")[0]
         entity = entities.get(entity_id, {})
-        if (domain not in DOMAINS or entity.get("disabled_by")) and entity_id not in selected:
+        if (domain not in set(registry.get("supported_domains", DOMAINS)) or entity.get("disabled_by")) and entity_id not in selected:
             continue
         device = devices.get(entity.get("device_id"), {})
-        area_id = entity.get("area_id") or device.get("area_id") or ""
+        area_id = device_areas.get(device.get("id")) or entity.get("area_id") or ""
         area = areas.get(area_id, {})
         floor = floors.get(area.get("floor_id"), {})
         if area_id not in groups:
@@ -72,6 +82,7 @@ def organize(states, registry, selected=()):
             }
         device_id = device.get("id") or "standalone:" + domain
         card = groups[area_id]["devices"].setdefault(device_id, {
+            "physical": bool(device),
             "name": device.get("name_by_user") or device.get("name") or
                     domain.replace("_", " ").title() + " entities",
             "manufacturer": device.get("manufacturer") or "",
@@ -96,13 +107,18 @@ def organize(states, registry, selected=()):
     return result
 
 
-def dashboard(states, registry, selected, csrf, connected, links, grants, configuration, warning=""):
+def dashboard(states, registry, selected, csrf, connected, links, grants, configuration, warning="",
+              endpoint_status=None):
     areas = organize(states, registry, selected)
     all_entities = [entity for area in areas for device in area["devices"] for entity in device["entities"]]
     selected = set(selected)
     selected_count = sum(entity["id"] in selected for entity in all_entities)
     device_count = sum(len(area["devices"]) for area in areas)
     floor_count = len({area["floor"] for area in areas if area["floor"] != "Other areas"})
+    endpoint_by_entity = {
+        entity_id: device for device in (endpoint_status or {}).get("devices", [])
+        for entity_id in device["entities"]
+    }
     esc = lambda value: escape(str(value), quote=True)
     content = [
         "<div class='shell'><header class='topbar'><a class='brand' href=''>",
@@ -143,6 +159,14 @@ def dashboard(states, registry, selected, csrf, connected, links, grants, config
                        configuration + "</section>")
     if warning:
         content.append("<section class='notice warning' role='alert'>" + esc(warning) + "</section>")
+    if endpoint_status is not None:
+        content.append("<section class='notice'><div><strong>Native device endpoints active</strong>"
+                       f"<p>{len(endpoint_status['devices'])} Alexa endpoints. Controls and supported sensors "
+                       "share one physical-device identity.</p></div></section>")
+        if endpoint_status.get("warnings"):
+            content.append("<section class='notice warning'><details><summary>Compatibility details</summary><ul>" +
+                           "".join("<li>" + esc(value) + "</li>" for value in endpoint_status["warnings"]) +
+                           "</ul></details></section>")
     content.append(
         "<form method='post' id='entity-form'>"
         f"<input type='hidden' name='csrf' value='{esc(csrf)}'>"
@@ -164,8 +188,9 @@ def dashboard(states, registry, selected, csrf, connected, links, grants, config
         "<div class='sidebar-note'>" + icon("check") +
         "<p>Rooms and floors come from Home Assistant. Nothing to organize twice.</p></div></aside>"
         "<main class='inventory'><div class='inventory-heading'><div class='eyebrow'>CURATE YOUR CONNECTION</div>"
-        "<h2 id='view-title'>Whole home</h2><p>Pick devices, or fine-tune each entity. "
-        "Cards group your HA entities; Alexa may discover them separately.</p></div>"
+        "<h2 id='view-title'>Whole home</h2><p>Select physical devices for Alexa. "
+        "Their supported controls and sensors become one native endpoint. "
+        "Expand your selection only as needed; scenes remain independent.</p></div>"
         "<div class='toolbar'><label class='search'>" + icon("search") +
         "<span class='sr-only'>Search entities, devices, or rooms</span>"
         "<input id='entity-search' type='search' placeholder='Search your home...' autocomplete='off'></label>"
@@ -188,10 +213,19 @@ def dashboard(states, registry, selected, csrf, connected, links, grants, config
             search = " ".join([area["name"], area["floor"], device["name"],
                                device["manufacturer"], device["model"]]).casefold()
             main_domain = device["entities"][0]["domain"]
+            endpoint = next((endpoint_by_entity[entity["id"]] for entity in device["entities"]
+                             if entity["id"] in endpoint_by_entity), None)
+            endpoint_label = (
+                f"Alexa: {esc(endpoint['name'])} / {len(endpoint['capabilities'])} capabilities"
+                if endpoint else (
+                    "Independent Alexa endpoints" if not device["physical"] or
+                    all(entity["domain"] in ("scene", "script", "camera") for entity in device["entities"])
+                    else "One physical device / supported capabilities bundled"))
             content.append(
                 f"<article class='device-card' data-search='{esc(search)}'>"
                 "<header class='device-heading'><span class='device-icon'>" + icon(main_domain) +
-                f"</span><div><h4>{esc(device['name'])}</h4><p>{esc(' '.join(filter(None, [device['manufacturer'], device['model']])) or 'Home Assistant')}</p></div>"
+                f"</span><div><h4>{esc(device['name'])}</h4><p>{esc(' '.join(filter(None, [device['manufacturer'], device['model']])) or 'Home Assistant')}</p>"
+                f"<p class='endpoint-label'>{endpoint_label}</p></div>"
                 f"<label class='device-select'><span class='sr-only'>Select visible entities on {esc(device['name'])}</span>"
                 "<input type='checkbox' class='device-checkbox'></label></header><div class='device-entities'>")
             last_kind = None

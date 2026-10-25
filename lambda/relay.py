@@ -18,6 +18,8 @@ from botocore.exceptions import ClientError
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 MAX_MESSAGE = 28_000
+MAX_RESPONSE = 256_000
+RESPONSE_CHUNK = 12_000
 PARAMETERS = {}
 
 
@@ -259,15 +261,21 @@ def socket(event):
         request = get("request#" + request_id)
         if not request or request["connection"] != connection:
             return {"statusCode": 400}
-        result = body.get("body")
-        if not isinstance(result, dict):
-            return {"statusCode": 413}
+        index, total, data = body.get("index"), body.get("total"), body.get("data")
+        if (type(index) is not int or type(total) is not int
+                or not 0 <= index < total <= (MAX_RESPONSE + RESPONSE_CHUNK - 1) // RESPONSE_CHUNK
+                or not isinstance(data, str) or not data.isascii()
+                or not 0 < len(data) <= RESPONSE_CHUNK
+                or (index < total - 1 and len(data) != RESPONSE_CHUNK)
+                or (index == total - 1 and index * RESPONSE_CHUNK + len(data) > MAX_RESPONSE)):
+            return {"statusCode": 400}
         table().update_item(
             Key={"pk": "request#" + request_id},
-            UpdateExpression="SET #result = :result",
-            ConditionExpression="attribute_not_exists(#result) AND expires > :now",
-            ExpressionAttributeNames={"#result": "result"},
-            ExpressionAttributeValues={":result": result, ":now": int(time.time())},
+            UpdateExpression="SET #parts.#part = :data, #total = :total",
+            ConditionExpression=("attribute_not_exists(#parts.#part) AND expires > :now "
+                                 "AND (attribute_not_exists(#total) OR #total = :total)"),
+            ExpressionAttributeNames={"#part": str(index), "#parts": "parts", "#total": "total"},
+            ExpressionAttributeValues={":data": data, ":total": total, ":now": int(time.time())},
         )
     else:
         return {"statusCode": 400}
@@ -294,7 +302,8 @@ def invoke(event):
     created = False
     try:
         table().put_item(
-            Item={"pk": key, "expires": int(time.time()) + 60, "connection": connection["connection"]},
+            Item={"pk": key, "expires": int(time.time()) + 60,
+                  "connection": connection["connection"], "parts": {}},
             ConditionExpression="attribute_not_exists(pk) OR expires < :now",
             ExpressionAttributeValues={":now": int(time.time())},
         )
@@ -308,8 +317,12 @@ def invoke(event):
     deadline = time.monotonic() + 4.5
     while time.monotonic() < deadline:
         response = get(key)
-        if response and "result" in response:
-            return response["result"]
+        if response and response.get("total") and len(response["parts"]) == response["total"]:
+            result = json.loads("".join(response["parts"][str(index)]
+                                       for index in range(response["total"])))
+            if not isinstance(result, dict) or type(result.get("status")) is not int:
+                raise ValueError("Invalid connector response")
+            return result
         time.sleep(0.15)
     return {"status": 504}
 

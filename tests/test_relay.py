@@ -59,6 +59,19 @@ class RelayTests(unittest.TestCase):
     def connect(self):
         return self.socket(route="$connect", headers={"Authorization": "Bearer connector-key"})
 
+    def respond(self, request_id, result):
+        raw = json.dumps(result)
+        frames = [
+            {"action": "response", "id": request_id, "index": index,
+             "total": (len(raw) + relay.RESPONSE_CHUNK - 1) // relay.RESPONSE_CHUNK,
+             "data": raw[offset:offset + relay.RESPONSE_CHUNK]}
+            for index, offset in enumerate(range(0, len(raw), relay.RESPONSE_CHUNK))
+        ]
+        for frame in reversed(frames):
+            self.assertLessEqual(len(json.dumps(frame).encode()), relay.MAX_MESSAGE)
+            self.assertEqual(self.socket(frame)["statusCode"], 200)
+        return frames
+
     def authorize(self, **override):
         params = {"client_id": CLIENT, "redirect_uri": REDIRECT,
                   "response_type": "code", "state": "csrf-state"}
@@ -136,12 +149,11 @@ class RelayTests(unittest.TestCase):
 
     def test_roundtrip_correlates_response_and_deduplicates_alexa_retries(self):
         _, tokens = self.token(code=self.approved_code())
-        expected = {"status": 200, "body": {"event": {"payload": {"count": 2}}}}
+        expected = {"status": 200, "body": {"event": {"payload": {"data": "x" * 80_000}}}}
 
         def send_and_respond(connection, body):
             self.assertEqual(body["path"], "/api/alexa/smart_home")
-            self.assertEqual(self.socket({"action": "response", "id": body["id"],
-                                         "body": expected})["statusCode"], 200)
+            self.respond(body["id"], expected)
 
         request = {"operation": "invoke", "token": tokens["access_token"],
                    "client_id": CLIENT, "path": "/api/alexa/smart_home",
@@ -180,12 +192,33 @@ class RelayTests(unittest.TestCase):
 
     def test_accepted_response_size_matches_connector_limit(self):
         self.connect()
-        relay.put("request#" + "a" * 32, 60, connection="home")
-        result = {"status": 200, "body": {"data": "x" * 27_500}}
-        response = {"action": "response", "id": "a" * 32, "body": result}
-        self.assertLess(len(json.dumps(response).encode()), relay.MAX_MESSAGE)
-        self.assertEqual(self.socket(response)["statusCode"], 200)
-        self.assertEqual(relay.get("request#" + "a" * 32)["result"], result)
+        relay.put("request#" + "a" * 32, 60, connection="home", parts={})
+        empty = {"status": 200, "body": {"data": ""}}
+        result = {"status": 200, "body": {"data": "x" * (relay.MAX_RESPONSE - len(json.dumps(empty)))}}
+        self.assertEqual(len(json.dumps(result)), relay.MAX_RESPONSE)
+        frames = self.respond("a" * 32, result)
+        stored = relay.get("request#" + "a" * 32)
+        self.assertEqual(json.loads("".join(stored["parts"][str(index)]
+                                           for index in range(stored["total"]))), result)
+        self.assertGreater(len(frames), 1)
+        self.assertNotEqual(self.socket(frames[0])["statusCode"], 200)
+
+    def test_chunk_validation_rejects_inconsistent_counts_and_unbounded_responses(self):
+        self.connect()
+        relay.put("request#" + "a" * 32, 60, connection="home", parts={})
+        for overrides in (
+            {"total": 1000}, {"index": -1}, {"index": True}, {"data": "\u2600"},
+            {"total": 2, "index": 0, "data": "too short"}, {"data": "x" * 12_001},
+            {"total": 22, "index": 21, "data": "x" * 4001},
+        ):
+            frame = {"action": "response", "id": "a" * 32, "index": 0, "total": 1,
+                     "data": '{"status":200}', **overrides}
+            self.assertNotEqual(self.socket(frame)["statusCode"], 200)
+        self.assertEqual(relay.get("request#" + "a" * 32)["parts"], {})
+        frame = {"action": "response", "id": "a" * 32, "index": 0, "total": 2,
+                 "data": "x" * relay.RESPONSE_CHUNK}
+        self.assertEqual(self.socket(frame)["statusCode"], 200)
+        self.assertNotEqual(self.socket({**frame, "index": 1, "total": 3})["statusCode"], 200)
 
     def test_poll_lists_pending_requests_without_browser_secrets(self):
         self.authorize()

@@ -1,17 +1,19 @@
 # Alexa + Home Assistant
 
-Terraform-managed AWS bridges for Home Assistant's built-in
+Terraform-managed AWS bridges using Home Assistant's native
 [Alexa Smart Home](https://www.home-assistant.io/integrations/alexa.smart_home/)
 and [Alexa Custom Skill](https://www.home-assistant.io/integrations/alexa.intent/)
-integrations.
+capabilities, with a local `alexa_devices` integration that presents physical
+devices as bundled Alexa endpoints.
 
 - **Smart Home:** "Alexa, turn on the kitchen light", discovery, state queries,
   scenes/scripts, and forwarding of the AcceptGrant used for proactive events.
 - **Optional Custom skill:** "Alexa, ask home assistant what is the home status",
   with intents implemented by Home Assistant's `intent_script`.
 
-Home Assistant remains responsible for capabilities, device filters, actions,
-and speech. The bridges forward requests rather than duplicate that logic.
+Home Assistant remains responsible for capability adapters, device filters,
+actions, and speech. Our local integration composes those adapters into native
+device endpoints and routes requests back to HA's original Alexa handlers.
 This does not replace Alexa with HA Assist or provide local-only voice control.
 
 ## Outbound relay setup (recommended)
@@ -71,9 +73,22 @@ ASK CLI locally when missing. The wizard:
 
 The local dashboard organizes entities by HA floor, room, and physical device,
 with related controls and sensors on the same card. Search, type filters, and
-bulk selection help curate exposure without reorganizing HA. Device cards are
-selection groups, not merged Alexa endpoints; Alexa capabilities still come
-from HA's built-in integration.
+bulk selection help curate exposure without reorganizing HA. Selected entities
+on a physical HA device are merged into one Alexa endpoint, including supported
+controls and sensors. Additional on/off controls become named toggles. Sensors
+or duplicate capabilities that Alexa cannot represent are explained in the
+dashboard rather than silently exported as separate devices. Coverage follows
+HA's native adapters, including lights, plugs, locks, alarms, garage doors,
+covers, climate, fans, media, and supported sensors; Alexa's capability/region
+limits and HA's PIN/security rules still apply.
+
+Setup previews and installs `custom_components/alexa_devices` alongside the
+owned YAML, with backups. It replaces managed per-entity Smart Home configuration,
+not unrelated integrations. After migrating, restart HA, remove old individual
+Alexa devices, and relink once. Scenes/scripts, cameras, and unassigned entities
+remain independent endpoints. See [app documentation](addon/DOCS.md) for limits.
+The custom integration is tested against HA 2026.10.3 and depends on internal
+HA Alexa APIs; compatibility must be checked on HA upgrades.
 
 **Account consent cannot be skipped.** In the Alexa app, enable/link each
 development skill, then compare the displayed code with the local connector's
@@ -148,9 +163,11 @@ to your LAN or Internet. HA OS uses authenticated Supervisor ingress instead.
   expiry. Revocation invalidates access and refresh
   tokens immediately. DynamoDB TTL cleanup is asynchronous; application checks
   enforce expiry even before physical deletion.
-- Messages are deliberately limited to **28 KB**, below API Gateway's 32 KB
-  frame limit. Large discovery results fail explicitly: reduce the entity
-  allowlist. This is an Alexa command transport, not a general HTTP tunnel.
+- WebSocket frames stay below **28 KB**. Discovery responses are split into
+  bounded, request-correlated fragments and reassembled in the relay, supporting
+  responses up to **256,000 bytes** without exceeding API Gateway's frame limit.
+  Larger results fail explicitly; reduce the selected capabilities. Commands
+  still use only the two fixed Alexa routes, not a general HTTP tunnel.
 - API Gateway disconnects sockets after two hours. The connector reconnects
   with backoff and polls every ten seconds (also preventing idle timeout).
   Requests are bounded; failures are surfaced, not silently replayed. Request
@@ -268,6 +285,9 @@ client ID.
 
 ## 4. Configure Home Assistant and custom intents
 
+Copy the three files from `addon/device_component/` into
+`<HA config>/custom_components/alexa_devices/` first. Remove an existing
+`alexa.smart_home` block; the bundled integration owns that API.
 Merge [examples/home-assistant.yaml](examples/home-assistant.yaml) into your
 configuration, replacing the example entities. Keep the explicit allowlist:
 without a filter, HA exposes all supported entities. Check HA configuration and
@@ -300,7 +320,8 @@ responses after a session has ended.
 
 In the Smart Home skill enable **Permissions > Send Alexa Events**. Put the
 resulting **Alexa Skill Messaging** client ID/secret in HA's `secrets.yaml`,
-and uncomment the `endpoint`, `client_id`, and `client_secret` example settings.
+and set the `endpoint`, `client_id`, and `client_secret` example settings.
+Remove those settings when proactive reporting is not enabled.
 Choose the gateway for the skill region:
 
 | AWS region | Event gateway |
@@ -343,6 +364,17 @@ terraform fmt -check -recursive
 terraform validate
 terraform test
 docker build -t ha-alexa-connector:test addon
+```
+
+Native adapter/handler tests run separately with Python 3.14 and the pinned HA
+runtime; they cover discovery across 19 device families, registry identity,
+control routing, PIN enforcement, actual metadata/state HTTP delivery, and
+custom-component loading (with dependency startup isolated):
+
+```sh
+python3.14 -m venv .ha-test-venv
+.ha-test-venv/bin/python -m pip install -r tests/ha_runtime/requirements.txt
+.ha-test-venv/bin/python -m unittest discover -s tests/ha_runtime -v
 ```
 
 Terraform tests use a mocked AWS provider; they do not require AWS credentials

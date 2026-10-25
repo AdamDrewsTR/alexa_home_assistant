@@ -12,10 +12,16 @@ from ruamel.yaml.error import YAMLError
 
 
 MARKER = "# Managed by ha-alexa setup; edit entity selection through setup.\n"
+COMPONENT = Path("custom_components/alexa_devices")
+COMPONENT_FILES = ("__init__.py", "bundles.py", "manifest.json")
 
 
-def selected_entities(directory):
-    path = Path(directory) / "alexa_bridge.yaml"
+def selected_entities(directory, registry_entities=()):
+    directory = Path(directory)
+    path = directory / "alexa_devices.yaml"
+    bundled = path.exists()
+    if not bundled:
+        path = directory / "alexa_bridge.yaml"
     if not path.exists():
         return []
     text = path.read_text()
@@ -23,12 +29,16 @@ def selected_entities(directory):
         raise ValueError("Existing Alexa configuration is manually managed; selection was not imported")
     try:
         config = YAML(typ="safe").load(text)
-        entities = config["smart_home"]["filter"]["include_entities"]
+        entities = (config if bundled else config["smart_home"])["filter"]["include_entities"]
         if not isinstance(entities, list) or not all(isinstance(entity, str) for entity in entities):
             raise ValueError("Invalid include_entities list")
-        return entities
+        by_id = {entry["id"]: entry["entity_id"] for entry in registry_entities if entry.get("id")}
+        identities = config.get("entity_ids", {}) if bundled else {}
+        if not isinstance(identities, dict):
+            raise ValueError("Invalid entity_ids mapping")
+        return [by_id.get(identities.get(entity_id), entity_id) for entity_id in entities]
     except (YAMLError, KeyError, TypeError, ValueError) as error:
-        raise ValueError("Cannot read selected entities from alexa_bridge.yaml; inspect its filter") from error
+        raise ValueError(f"Cannot read selected entities from {path.name}; inspect its filter") from error
 
 
 def atomic_write(path, content):
@@ -52,7 +62,8 @@ def render(yaml, value):
     return output.getvalue()
 
 
-def generate(directory, entities, locale="en-US", custom_skill=None, event_credentials=None):
+def generate(directory, entities, locale="en-US", custom_skill=None, event_credentials=None,
+             entity_ids=None):
     """Return proposed file contents without writing; refuse ownership conflicts."""
     directory = Path(directory)
     root = directory / "configuration.yaml"
@@ -64,7 +75,7 @@ def generate(directory, entities, locale="en-US", custom_skill=None, event_crede
         config = {}
     if not isinstance(config, dict):
         raise ValueError("configuration.yaml must contain a mapping")
-    desired = {"alexa": "alexa_bridge.yaml"}
+    desired = {"alexa": "alexa_bridge.yaml", "alexa_devices": "alexa_devices.yaml"}
     if custom_skill:
         desired["intent_script"] = "alexa_bridge_intents.yaml"
     for key, filename in desired.items():
@@ -85,10 +96,21 @@ def generate(directory, entities, locale="en-US", custom_skill=None, event_crede
            for entity in entities):
         raise ValueError("Invalid entity ID")
     smart = {"locale": locale, "filter": {"include_entities": sorted(set(entities))}}
-    files = {"alexa_bridge.yaml": MARKER + render(yaml, {"smart_home": smart})}
     if event_credentials:
         smart.update(event_credentials)
-        files["alexa_bridge.yaml"] = MARKER + render(yaml, {"smart_home": smart})
+    if entity_ids:
+        smart["entity_ids"] = {key: value for key, value in entity_ids.items() if key in entities}
+    # Built-in Alexa remains responsible for Custom intents, not Smart Home.
+    files = {"alexa_bridge.yaml": MARKER + "{}\n",
+             "alexa_devices.yaml": MARKER + render(yaml, smart)}
+    source = Path(__file__).parent / "device_component"
+    target = directory / COMPONENT
+    if target.exists():
+        marker = target / "__init__.py"
+        if not marker.exists() or not marker.read_text().startswith(MARKER):
+            raise ValueError("Existing alexa_devices custom component is not owned by this tool")
+    for name in COMPONENT_FILES:
+        files[str(COMPONENT / name)] = (source / name).read_text()
     if custom_skill:
         intents = {
             "HomeStatusIntent": {"speech": {"type": "plain", "text": "Home Assistant is connected."}},
@@ -114,9 +136,15 @@ def apply(directory, files):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
     backups = {}
     for name in files:
-        if Path(name).name != name:
-            raise ValueError("Only direct configuration files may be changed")
+        if Path(name).name != name and name not in {str(COMPONENT / part) for part in COMPONENT_FILES}:
+            raise ValueError("Only configuration files and the owned Alexa component may be changed")
         path = directory / name
+        relative = Path(name)
+        if path.is_symlink() or any((directory / parent).is_symlink()
+                                   for parent in relative.parents if str(parent) != "."):
+            raise ValueError("Refusing to write configuration through symlinks")
+        if not path.resolve().is_relative_to(directory.resolve()):
+            raise ValueError("Configuration target must stay inside the configuration directory")
         if path.exists():
             backups[name] = path.read_text()
             atomic_write(directory / f"{name}.alexa-backup-{stamp}", backups[name])

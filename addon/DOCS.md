@@ -13,11 +13,43 @@ managed selections are preselected, including unavailable entities, and
 filtering does not silently remove selections. No entities are preselected on
 first setup. Account-linking requests update without reloading your selections.
 
-Device cards group related entities for selection **in this UI**. They do not
-merge separate HA entities into one Alexa device or create Alexa room groups.
-HA determines which selected entities and capabilities Alexa can discover;
-some sensor types are not supported. True multi-entity Alexa bundles would
-also require coordinated discovery, command routing, and proactive reporting.
+**One physical device becomes one native Alexa endpoint.** Setup installs the
+`alexa_devices` custom integration inside HA, which composes HA's native Alexa
+capabilities and handlers without patching HA. Selected controls and supported
+sensors belonging to the same HA device share discovery, control, state queries,
+and proactive state reporting. Endpoint IDs survive restarts and renames;
+HA registry IDs also keep selected entities selected after renaming.
+
+Coverage follows HA's Alexa adapter registry, not a fixed device shortlist:
+lights, plugs/switches, supported sensors, locks, security panels, garage doors,
+covers, fans, thermostats, media players, vacuums, humidifiers, water heaters,
+valves, numeric controls, and other native adapters. Locks and alarm commands
+use the original HA handlers and service-level authorization/PIN validation.
+Alexa's regional, device-class, and capability restrictions still apply.
+
+Additional on/off controls use named `Alexa.ToggleController` instances.
+Range, mode, and toggle components receive stable instance IDs. When Alexa
+allows only one specific capability (for example, one temperature sensor),
+the conflicting capability is omitted and listed under **Compatibility
+details**, rather than exported as an unexpected extra device. Unsupported
+measurements such as many energy sensors are also reported explicitly.
+Scenes, scripts, cameras, and entities without a physical HA device remain
+independent endpoints because they represent separate actions or lifecycles.
+The dashboard does not create Alexa room groups.
+Physical device cards use the device's area (or one stable entity-area fallback)
+so entity area overrides do not split a single endpoint across rooms.
+Camera streaming still requires HA's native streaming/HTTPS prerequisites;
+the outbound command relay does not carry video.
+
+After upgrading from a per-entity setup, preview/apply and restart HA, remove
+the old individual devices in Alexa, and relink the Smart Home skill once.
+Update both the AWS relay (review/apply the Terraform plan) and connector:
+version 0.2.0 uses bounded response fragments for larger discovery results.
+The new integration has its own local event-authorization storage. Subsequent
+device metadata updates/removals use native AddOrUpdateReport/DeleteReport.
+There is no parallel legacy per-entity runtime. Integration tests target HA
+2026.10.3; verify compatibility before upgrading HA because native adapter APIs
+are internal HA APIs.
 
 If the configuration check fails, do not restart: inspect HA logs and restore
 the timestamped `.alexa-backup` files as appropriate.

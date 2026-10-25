@@ -72,7 +72,7 @@ class Inputs(HTMLParser):
 
 
 class DashboardTests(unittest.TestCase):
-    def test_area_precedence_related_sensors_and_unassigned_entities(self):
+    def test_physical_devices_stay_together_despite_entity_area_overrides(self):
         states, registry = example_home()
         registry["entities"][1]["area_id"] = "kitchen"
         groups = organize(states, registry)
@@ -82,8 +82,9 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual({entity["id"] for entity in monitor["entities"]},
                          {"sensor.temperature", "sensor.humidity"})
         kitchen = next(area for area in groups if area["id"] == "kitchen")
-        lamp = next(device for device in kitchen["devices"] if device["name"] == "Reading lamp")
-        self.assertEqual([entity["id"] for entity in lamp["entities"]], ["sensor.lamp_power"])
+        self.assertFalse(any(device["name"] == "Reading lamp" for device in kitchen["devices"]))
+        lamp = next(device for device in living["devices"] if device["name"] == "Reading lamp")
+        self.assertEqual({entity["id"] for entity in lamp["entities"]}, {"light.reading", "sensor.lamp_power"})
 
     def test_existing_selection_is_preserved_even_if_absent_disabled_or_unsupported(self):
         states, registry = example_home()
@@ -108,7 +109,20 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("<img src=x>", page)
         self.assertIn("&lt;unsafe&gt;", page)
         self.assertEqual(len(Inputs(page).entities), len(states))
-        self.assertIn("Alexa may discover them separately", page)
+        self.assertIn("one native endpoint", page)
+
+    def test_native_endpoint_details_show_real_bundle_names_and_compatibility_limits(self):
+        states, registry = example_home()
+        status = {"devices": [{
+            "name": "Coffee <station>", "entities": ["switch.coffee"],
+            "capabilities": ["Alexa", "Alexa.PowerController", "Alexa.EndpointHealth"],
+        }], "warnings": ["sensor.coffee_energy: no <supported> Alexa capability"]}
+        page = dashboard(states, registry, ["switch.coffee"], "csrf", True, [], [], "",
+                         endpoint_status=status)
+        self.assertIn("Native device endpoints active", page)
+        self.assertIn("Alexa: Coffee &lt;station&gt; / 3 capabilities", page)
+        self.assertIn("Compatibility details", page)
+        self.assertIn("no &lt;supported&gt; Alexa capability", page)
 
     def test_selection_is_read_from_owned_yaml_and_rejects_bad_filters(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -119,7 +133,7 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(selected_entities(root), [])
             apply(root, generate(root, ["light.reading", "sensor.temperature"]))
             self.assertEqual(selected_entities(root), ["light.reading", "sensor.temperature"])
-            path = root / "alexa_bridge.yaml"
+            path = root / "alexa_devices.yaml"
             path.write_text(path.read_text().replace("include_entities:", "exclude_entities:"))
             with self.assertRaisesRegex(ValueError, "Cannot read selected"):
                 selected_entities(root)

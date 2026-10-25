@@ -8,6 +8,7 @@ terraform.tfvars
 .build/
 __pycache__/
 .venv/
+.ha-test-venv/
 .DS_Store
 .setup/
 *.tfvars.json

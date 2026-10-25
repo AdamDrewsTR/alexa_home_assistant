@@ -19,7 +19,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             events.append(request.headers["Authorization"])
             if request.headers["Authorization"] == "Bearer expired":
                 return web.Response(status=401)
-            return web.json_response({"data": "x" * 27_950})
+            return web.json_response({"data": "x" * 255_980})
 
         async def refresh(request):
             refreshes.append(dict(await request.post()))
@@ -47,7 +47,9 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(refreshes, [{"grant_type": "refresh_token",
                                               "refresh_token": "local-refresh",
                                               "client_id": "local-client"}])
-                self.assertEqual(json.loads(socket.send_str.call_args.args[0])["body"]["status"], 413)
+                response = json.loads("".join(json.loads(call.args[0])["data"]
+                                              for call in socket.send_str.call_args_list))
+                self.assertEqual(response["status"], 413)
                 self.assertEqual(connector.config["ha_token"], "fresh")
             finally:
                 connector.db.close()
@@ -102,7 +104,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 task = asyncio.create_task(connector.connection())
                 try:
                     result = await asyncio.wait_for(received.get(), 5)
-                    self.assertEqual(result["body"]["body"]["event"]["payload"]["powerState"], "ON")
+                    self.assertEqual(json.loads(result["data"])["body"]["event"]["payload"]["powerState"], "ON")
                     await connections[0].close()
                     deadline = asyncio.get_running_loop().time() + 5
                     while len(connections) < 2 and asyncio.get_running_loop().time() < deadline:
