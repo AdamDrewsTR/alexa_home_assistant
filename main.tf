@@ -81,7 +81,7 @@ resource "aws_lambda_function" "bridge" {
   architectures    = ["arm64"]
   handler          = "bridge.${each.key}"
   timeout          = 8
-  memory_size      = 128
+  memory_size      = 512
 
   environment {
     variables = merge({

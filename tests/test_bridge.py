@@ -1,9 +1,10 @@
 import importlib.util
 import json
+import io
 import os
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SPEC = importlib.util.spec_from_file_location(
@@ -156,6 +157,38 @@ class BridgeTests(unittest.TestCase):
                 bridge.smart_home(smart_event(), None)
                 bridge.custom(custom_event(), None)
                 self.assertNotIn("test-account-token", str(handle.call_args_list))
+
+    def test_relay_accept_grant_returns_success_without_modifying_directive(self):
+        event = smart_event("grantee")
+        event["directive"]["header"].update(namespace="Alexa.Authorization", name="AcceptGrant")
+        event["directive"]["payload"]["grant"] = {"code": "private-grant-code"}
+        expected = {"event": {"header": {
+            "namespace": "Alexa.Authorization", "name": "AcceptGrant.Response", "payloadVersion": "3",
+        }, "payload": {}}}
+        client = Mock()
+        client.invoke.return_value = {
+            "Payload": io.BytesIO(json.dumps({"status": 200, "body": expected}).encode())}
+        with patch.dict(os.environ, {"RELAY_FUNCTION": "test-relay"}), \
+             patch.object(bridge, "relay_client", return_value=client):
+            self.assertEqual(bridge.smart_home(event, None), expected)
+        sent = json.loads(client.invoke.call_args.kwargs["Payload"])
+        self.assertEqual(sent["event"], event)
+        self.assertEqual(sent["path"], "/api/alexa/smart_home")
+        client.invoke.assert_called_once()
+
+    def test_relay_client_has_bounded_timeouts_and_disables_sdk_command_replay(self):
+        bridge.relay_client.cache_clear()
+        try:
+            with patch("boto3.client") as create:
+                first = bridge.relay_client()
+                self.assertIs(bridge.relay_client(), first)
+                create.assert_called_once()
+                config = create.call_args.kwargs["config"]
+                self.assertEqual(config.connect_timeout, 1)
+                self.assertEqual(config.read_timeout, 6)
+                self.assertEqual(config.retries["total_max_attempts"], 1)
+        finally:
+            bridge.relay_client.cache_clear()
 
 
 if __name__ == "__main__":

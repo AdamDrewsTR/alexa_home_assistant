@@ -35,6 +35,8 @@ class RelayTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         relay.PARAMETERS.clear()
+        relay.table.cache_clear()
+        relay.aws_client.cache_clear()
         boto3.resource("dynamodb").create_table(
             TableName="relay", KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "pk", "AttributeType": "S"},
@@ -228,6 +230,19 @@ class RelayTests(unittest.TestCase):
         response = send.call_args.args[1]
         self.assertEqual(len(response["links"]), 1)
         self.assertEqual(set(response["links"][0]), {"id", "code", "client"})
+
+    def test_repeated_polls_reuse_aws_resources_and_connections(self):
+        relay.table.cache_clear()
+        relay.aws_client.cache_clear()
+        with patch.object(relay.boto3, "resource", wraps=boto3.resource) as resource, \
+             patch.object(relay.boto3, "client", wraps=boto3.client) as client:
+            self.connect()
+            for _ in range(3):
+                with patch.object(relay.aws_client("apigatewaymanagementapi"), "post_to_connection"):
+                    self.assertEqual(self.socket({"action": "poll"})["statusCode"], 200)
+            self.assertEqual(resource.call_count, 1)
+            self.assertEqual([call.args[0] for call in client.call_args_list],
+                             ["ssm", "apigatewaymanagementapi"])
 
 
 if __name__ == "__main__":

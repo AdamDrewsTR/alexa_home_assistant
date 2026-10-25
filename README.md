@@ -129,6 +129,15 @@ If the old endpoint runtime had already been linked, relink after the rename
 and remove its old Alexa devices; the integration's local identity/auth store
 uses the new domain.
 
+If account linking still fails after local approval, check the Smart Home and
+relay Lambda logs. A successful HA `AcceptGrant.Response` can still arrive too
+late for Alexa if cloud execution times out. The current Terraform configuration
+allocates 512 MB to each Lambda for more CPU, and the bridges/relay reuse AWS SDK
+clients initialized outside the request path. Apply the latest Terraform plan
+to deploy these cloud changes; no app update is required for this latency fix.
+The Smart Home timeout remains eight seconds. Relay logs report status and
+elapsed time without logging tokens or command payloads.
+
 **Account consent cannot be skipped.** In the Alexa app, enable/link each
 development skill, then compare the displayed code with the local connector's
 pending request and click Approve. This also works if Alexa is on your phone

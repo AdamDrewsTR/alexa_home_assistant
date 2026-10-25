@@ -109,7 +109,7 @@ resource "aws_lambda_function" "relay" {
   architectures    = ["arm64"]
   handler          = "relay.handler"
   timeout          = 7
-  memory_size      = 128
+  memory_size      = 512
   environment {
     variables = {
       TABLE               = aws_dynamodb_table.relay[0].name

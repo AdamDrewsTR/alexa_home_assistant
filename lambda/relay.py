@@ -9,6 +9,7 @@ import os
 import secrets
 import time
 from decimal import Decimal
+from functools import cache
 from urllib.parse import parse_qs, urlencode
 
 import boto3
@@ -23,8 +24,15 @@ RESPONSE_CHUNK = 12_000
 PARAMETERS = {}
 
 
+@cache
 def table():
     return boto3.resource("dynamodb").Table(os.environ["TABLE"])
+
+
+@cache
+def aws_client(service):
+    options = {"endpoint_url": os.environ["SOCKET_ENDPOINT"]} if service == "apigatewaymanagementapi" else {}
+    return boto3.client(service, **options)
 
 
 def digest(value):
@@ -35,7 +43,7 @@ def secret(name):
     cached = PARAMETERS.get(name)
     if cached and time.monotonic() - cached[0] < 60:
         return cached[1]
-    value = boto3.client("ssm").get_parameter(
+    value = aws_client("ssm").get_parameter(
         Name=os.environ[name], WithDecryption=True
     )["Parameter"]["Value"]
     PARAMETERS[name] = (time.monotonic(), value)
@@ -82,7 +90,7 @@ def send(connection, body):
     encoded = json.dumps(body).encode()
     if len(encoded) > MAX_MESSAGE:
         raise ValueError("Relay message exceeds 28 KB limit")
-    boto3.client("apigatewaymanagementapi", endpoint_url=os.environ["SOCKET_ENDPOINT"]).post_to_connection(
+    aws_client("apigatewaymanagementapi").post_to_connection(
         ConnectionId=connection, Data=encoded
     )
 
@@ -283,6 +291,7 @@ def socket(event):
 
 
 def invoke(event):
+    started = time.monotonic()
     access = get("access#" + digest(event.get("token", "")))
     if (not access or access["client"] != event.get("client_id")
             or not get("grant#" + access["grant"])):
@@ -322,8 +331,12 @@ def invoke(event):
                                        for index in range(response["total"])))
             if not isinstance(result, dict) or type(result.get("status")) is not int:
                 raise ValueError("Invalid connector response")
+            LOGGER.info("Alexa relay completed: HTTP %s in %.0f ms",
+                        result["status"], (time.monotonic() - started) * 1000)
             return result
         time.sleep(0.15)
+    LOGGER.error("Alexa relay response deadline exceeded after %.0f ms",
+                 (time.monotonic() - started) * 1000)
     return {"status": 504}
 
 
@@ -342,3 +355,9 @@ def handler(event, context):
         if event.get("operation") == "invoke":
             return {"status": 503}
         return oauth_error("server_error", 503)
+
+
+if os.environ.get("TABLE") and os.environ.get("SOCKET_ENDPOINT"):
+    table()
+    aws_client("ssm")
+    aws_client("apigatewaymanagementapi")

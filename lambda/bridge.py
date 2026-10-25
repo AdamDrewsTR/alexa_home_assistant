@@ -4,6 +4,7 @@ import http.client
 import json
 import logging
 import os
+from functools import cache
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -18,22 +19,37 @@ class UpstreamError(Exception):
     """An unusable Home Assistant response."""
 
 
+@cache
+def relay_client():
+    import boto3
+    from botocore.config import Config
+
+    return boto3.client("lambda", config=Config(
+        connect_timeout=1, read_timeout=6, retries={"total_max_attempts": 1},
+    ))
+
+
+if os.environ.get("RELAY_FUNCTION"):
+    # Initialize the SDK during Lambda initialization, not inside Alexa's response window.
+    relay_client()
+
+
 def _object(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
 def _forward(event: dict[str, Any], token: str, path: str) -> dict[str, Any]:
     if os.environ.get("RELAY_FUNCTION"):
-        import boto3
         from botocore.exceptions import BotoCoreError, ClientError
 
         try:
-            response = boto3.client("lambda").invoke(
+            response = relay_client().invoke(
                 FunctionName=os.environ["RELAY_FUNCTION"],
                 Payload=json.dumps({"operation": "invoke", "event": event, "token": token,
                                     "path": path, "client_id": os.environ["SKILL_ID"]}).encode(),
             )
         except (BotoCoreError, ClientError) as error:
+            LOGGER.error("Relay invocation failed (%s)", type(error).__name__)
             raise UpstreamError("Relay invocation failed") from error
         result = json.loads(response["Payload"].read())
         if response.get("FunctionError"):
@@ -41,6 +57,7 @@ def _forward(event: dict[str, Any], token: str, path: str) -> dict[str, Any]:
         if result.get("status") == 401:
             raise PermissionError("Relay rejected account credentials")
         if result.get("status") != 200 or not isinstance(result.get("body"), dict):
+            LOGGER.error("Relay returned HTTP %s", result.get("status"))
             raise UpstreamError("Relay unavailable")
         return result["body"]
     origin = urlsplit(os.environ["BASE_URL"])
