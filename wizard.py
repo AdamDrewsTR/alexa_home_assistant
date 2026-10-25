@@ -505,7 +505,7 @@ class Setup:
         request("POST", f"/addons/{slug}/options", {"options": options})
         operation = "restart" if current and current.get("state") == "started" else "start"
         request("POST", f"/addons/{slug}/{operation}")
-        open_browser(origin.rstrip("/") + "/hassio/addon/" + slug + "/info",
+        open_browser(origin.rstrip("/") + "/config/app/" + slug + "/info",
                      getattr(self.args, "browser", None))
         print("Open the app Web UI to select entities, preview configuration, and approve linking.")
 

@@ -200,8 +200,11 @@ class WizardTests(unittest.TestCase):
                             {"slug": slug, "state": "started"}] if running else []}
                     return {}
 
-                with patch.object(wizard, "supervisor_request", side_effect=request) as send:
+                with patch.object(wizard, "supervisor_request", side_effect=request) as send, \
+                     patch.object(wizard, "open_browser") as browser:
                     setup.install_ha()
+                browser.assert_called_once_with(
+                    f"http://ha.local:8123/config/app/{slug}/info", None)
                 paths = [call.args[2] for call in send.call_args_list]
                 self.assertEqual(f"/store/addons/{slug}/install" in paths, not running)
                 self.assertEqual(paths[-1], f"/addons/{slug}/" + ("restart" if running else "start"))
