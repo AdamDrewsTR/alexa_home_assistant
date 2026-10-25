@@ -1,5 +1,5 @@
 name: Alexa Outbound Connector
-version: "0.1.0"
+version: "0.1.1"
 slug: alexa_connector
 description: Private outbound Alexa relay with local account-link approval
 arch:

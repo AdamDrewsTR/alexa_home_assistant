@@ -69,6 +69,12 @@ ASK CLI locally when missing. The wizard:
 6. Opens the HA app page. Open its Web UI to select entities, preview generated
    YAML, back up/apply it, check configuration, and explicitly approve a restart.
 
+The local dashboard organizes entities by HA floor, room, and physical device,
+with related controls and sensors on the same card. Search, type filters, and
+bulk selection help curate exposure without reorganizing HA. Device cards are
+selection groups, not merged Alexa endpoints; Alexa capabilities still come
+from HA's built-in integration.
+
 **Account consent cannot be skipped.** In the Alexa app, enable/link each
 development skill, then compare the displayed code with the local connector's
 pending request and click Approve. This also works if Alexa is on your phone

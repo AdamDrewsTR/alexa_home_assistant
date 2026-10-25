@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import hmac
+import html
 import ipaddress
 import json
 import logging
@@ -18,9 +19,11 @@ import aiohttp
 from aiohttp import web
 
 if __package__:
-    from .ha_config import apply, generate
+    from .ha_config import apply, atomic_write, generate, selected_entities
+    from .ui import dashboard, document
 else:
-    from ha_config import apply, generate
+    from ha_config import apply, atomic_write, generate, selected_entities
+    from ui import dashboard, document
 
 LOGGER = logging.getLogger("ha-alexa.connector")
 MAX_MESSAGE = 28_000
@@ -43,7 +46,19 @@ class Connector:
         self.started = time.monotonic()
         self.last_poll = 0
         self.ready = False
-        self.config_plan = None
+        self.plan_path = self.data_dir / "configuration-plan.json"
+        self.config_plan = json.loads(self.plan_path.read_text()) if self.plan_path.exists() else None
+        self.configuration_lock = asyncio.Lock()
+
+    def redact(self, text):
+        for value in (
+            self.config.get("connector_key"), self.config.get("ha_token"),
+            self.config.get("ha_refresh_token"), os.environ.get("SUPERVISOR_TOKEN"),
+            (self.config.get("event_credentials") or {}).get("client_secret"),
+        ):
+            if value:
+                text = text.replace(value, "[redacted]")
+        return text
 
     async def ha(self, method, path, body=None):
         if os.environ.get("SUPERVISOR_TOKEN"):
@@ -72,7 +87,10 @@ class Connector:
                         self.config["ha_token"] = token = auth["access_token"]
                     continue
                 if response.status != 200:
-                    raise RuntimeError(f"Home Assistant HTTP {response.status}")
+                    hint = ("; Alexa endpoint is not loaded: validate configuration and restart HA"
+                            if response.status == 404 and path in ("/api/alexa", "/api/alexa/smart_home")
+                            else "")
+                    raise RuntimeError(f"Home Assistant {method} {path} HTTP {response.status}{hint}")
                 limit = 4_000_000 if method == "GET" and path == "/api/states" else MAX_MESSAGE
                 raw = bytearray()
                 async for chunk in response.content.iter_chunked(8192):
@@ -88,8 +106,60 @@ class Connector:
             headers={"Authorization": "Bearer " + os.environ["SUPERVISOR_TOKEN"]},
             allow_redirects=False, timeout=aiohttp.ClientTimeout(total=120),
         ) as response:
-            if response.status != 200 or (await response.json()).get("result") != "ok":
-                raise RuntimeError("Supervisor operation failed; inspect HA/Supervisor logs")
+            raw = await response.text()
+            try:
+                result = json.loads(raw)
+            except ValueError:
+                result = {}
+            if not isinstance(result, dict):
+                raise RuntimeError(f"Supervisor {path} HTTP {response.status}: invalid response")
+            if response.status != 200 or result.get("result") != "ok":
+                detail = result.get("message") or "No diagnostic message returned"
+                raise RuntimeError(self.redact(
+                    f"Supervisor {path} HTTP {response.status}: {detail}"))
+
+    async def registries(self):
+        if os.environ.get("SUPERVISOR_TOKEN"):
+            url, token = "http://supervisor/core/api/websocket", os.environ["SUPERVISOR_TOKEN"]
+        else:
+            url, token = self.config["ha_url"].rstrip("/") + "/api/websocket", self.config["ha_token"]
+        commands = {"entities": "config/entity_registry/list", "devices": "config/device_registry/list",
+                    "areas": "config/area_registry/list", "floors": "config/floor_registry/list"}
+        async with asyncio.timeout(12):
+            async with self.session.ws_connect(url, max_msg_size=4_000_000) as socket:
+                if (await socket.receive_json()).get("type") != "auth_required":
+                    raise RuntimeError("Unexpected HA registry authentication response")
+                await socket.send_json({"type": "auth", "access_token": token})
+                if (await socket.receive_json()).get("type") != "auth_ok":
+                    raise RuntimeError("HA registry authorization failed; check app permissions")
+                pending = {}
+                for request_id, (name, command) in enumerate(commands.items(), start=1):
+                    pending[request_id] = name
+                    await socket.send_json({"id": request_id, "type": command})
+                result = {}
+                while pending:
+                    response = await socket.receive_json()
+                    name = pending.pop(response.get("id"), None)
+                    if name is None:
+                        raise RuntimeError("Unexpected HA registry response")
+                    if not response.get("success") or not isinstance(response.get("result"), list):
+                        code = (response.get("error") or {}).get("code", "invalid_response")
+                        raise RuntimeError(f"Cannot read HA {name} registry ({code})")
+                    result[name] = response["result"]
+                return result
+
+    def page(self, content, status=200):
+        return web.Response(
+            status=status, text=document("<main class='result-page'>" + content +
+                                         "<p><a href=''>Back to your home</a></p></main>", self.csrf),
+            content_type="text/html", headers=self.page_headers(),
+        )
+
+    @staticmethod
+    def page_headers():
+        return {"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN",
+                "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; "
+                "connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'self'"}
 
     async def dispatch(self, message, socket):
         async with self.semaphore:
@@ -112,8 +182,9 @@ class Connector:
                 if not isinstance(event, dict):
                     raise ValueError("Invalid event")
                 result = {"status": 200, "body": await self.ha("POST", message["path"], event)}
-            except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError):
-                LOGGER.error("HA command failed; check local HA logs and configuration")
+            except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError) as error:
+                detail = self.redact(str(error)) or type(error).__name__
+                LOGGER.error("HA command %s failed: %s", message["path"], detail)
                 result = {"status": 502}
             encoded = json.dumps({"action": "response", "id": request_id, "body": result})
             if len(encoded.encode()) > MAX_MESSAGE:
@@ -192,8 +263,12 @@ class Connector:
                 if (directory / name).exists() else None for name in files}
 
     async def configuration(self, request, data):
-        import html
+        if self.configuration_lock.locked():
+            return web.Response(status=409, text="A configuration operation is in progress. Wait for it to finish.")
+        async with self.configuration_lock:
+            return await self.configure(request, data)
 
+    async def configure(self, request, data):
         if not os.environ.get("SUPERVISOR_TOKEN") or not self.config.get("supervisor_ingress"):
             raise web.HTTPForbidden(text="Use configure-ha locally outside HA OS")
         action = data.get("action")
@@ -203,44 +278,59 @@ class Connector:
                                  self.config.get("locale", "en-US"),
                                  self.config.get("custom_skill_id") or None,
                                  self.config.get("event_credentials") or None)
-                self.config_plan = (files, self.fingerprints(files))
+                self.config_plan = {"files": files, "fingerprints": self.fingerprints(files),
+                                    "id": secrets.token_urlsafe(24), "applied": False}
+                atomic_write(self.plan_path, json.dumps(self.config_plan))
                 content = "<h1>Review configuration</h1>"
                 for name, value in files.items():
-                    if self.config.get("event_credentials"):
-                        value = value.replace(self.config["event_credentials"]["client_secret"], "[redacted]")
-                    content += f"<h2>{html.escape(name)}</h2><pre>{html.escape(value)}</pre>"
-                content += self.form("apply-config", "Back up and apply configuration")
-                return web.Response(text=content, content_type="text/html",
-                                    headers={"Cache-Control": "no-store"})
+                    content += f"<h2>{html.escape(name)}</h2><pre>{html.escape(self.redact(value))}</pre>"
+                content += self.form("apply-config", "Back up and apply configuration", self.config_plan["id"])
+                return self.page(content)
             if action == "apply-config":
                 if not self.config_plan:
-                    raise ValueError("Preview configuration first")
-                files, fingerprints = self.config_plan
-                if self.fingerprints(files) != fingerprints:
+                    raise ValueError("No saved preview. Return to the connector home page and preview configuration.")
+                if data.get("plan") != self.config_plan["id"]:
+                    raise ValueError("This preview was replaced. Return to the connector home page and preview again.")
+                files = self.config_plan["files"]
+                if self.fingerprints(files) != self.config_plan["fingerprints"]:
                     raise ValueError("Configuration changed since preview; preview it again")
-                apply("/homeassistant", files)
-                self.config_plan = None
+                if not self.config_plan["applied"]:
+                    stamp = apply("/homeassistant", files)
+                    self.config_plan.update(applied=True, fingerprints=self.fingerprints(files), backup=stamp)
+                    atomic_write(self.plan_path, json.dumps(self.config_plan))
                 try:
                     await self.supervisor("/core/check")
-                except (RuntimeError, aiohttp.ClientError, TimeoutError):
-                    LOGGER.error("HA configuration check failed; backups retained, restart blocked")
-                    return web.Response(status=409, text="HA check failed. Do not restart; restore the "
-                                        ".alexa-backup files or inspect HA logs.")
-                return web.Response(text="<h1>Configuration valid</h1>" +
-                                    self.form("restart-ha", "Restart Home Assistant now"),
-                                    content_type="text/html")
+                except (RuntimeError, aiohttp.ClientError, TimeoutError) as error:
+                    detail = self.redact(str(error)) or type(error).__name__
+                    LOGGER.error("HA configuration check failed: %s", detail)
+                    return self.page(
+                        "<h1>HA check failed; restart blocked</h1><pre>" + html.escape(detail) +
+                        "</pre><p>Backups use suffix .alexa-backup-" +
+                        html.escape(self.config_plan.get("backup", "")) + "</p>" +
+                        self.form("apply-config", "Retry configuration check", self.config_plan["id"]),
+                        status=409,
+                    )
+                return self.page("<h1>Configuration valid</h1><p>Your configuration passed validation. "
+                                 "Restart Home Assistant to load it before linking Alexa.</p>" +
+                                 self.form("restart-ha", "Restart Home Assistant now"))
             if action == "restart-ha":
                 # Always check again, even if files were changed after the preview.
                 await self.supervisor("/core/check")
                 await self.supervisor("/core/restart")
-                return web.Response(text="Home Assistant restarted. Return to Alexa and link the skills.")
+                self.plan_path.unlink(missing_ok=True)
+                self.config_plan = None
+                return self.page("<h1>Restart requested</h1><p>Wait for Home Assistant to finish starting, "
+                                 "then return to Alexa and link the skills.</p>")
         except (ValueError, OSError, RuntimeError, aiohttp.ClientError, TimeoutError) as error:
-            LOGGER.error("Local HA configuration operation failed")
-            return web.Response(status=409, text=str(error))
+            detail = self.redact(str(error)) or type(error).__name__
+            LOGGER.error("Local HA configuration operation failed: %s", detail)
+            return self.page("<h1>Configuration needs attention</h1><pre>" + html.escape(detail) + "</pre>",
+                             status=409)
         raise web.HTTPBadRequest()
 
-    def form(self, action, label):
+    def form(self, action, label, plan=None):
         return (f"<form method='post'><input type='hidden' name='csrf' value='{self.csrf}'>"
+                + (f"<input type='hidden' name='plan' value='{plan}'>" if plan else "") +
                 f"<input type='hidden' name='action' value='{action}'>"
                 f"<button>{label}</button></form>")
 
@@ -258,46 +348,51 @@ class Connector:
             action = data.get("action")
             if action in ("approve", "revoke"):
                 await self.ws.send_json({"action": action, "id": data.get("id", "")})
-                return web.Response(text="Submitted. Return to Alexa to finish linking.")
+                return self.page("<h1>Request submitted</h1><p>Return to Alexa to finish linking.</p>")
             raise web.HTTPBadRequest()
-        import html
-
-        content = ["<h1>Alexa connector</h1>", "<p>Connected</p>" if self.ready else "<p>Disconnected</p>",
-                   "<p>Only approve a code matching the page you just opened in Alexa.</p>"]
-        for action, items in (("approve", self.links), ("revoke", self.grants)):
-            for item in items:
-                content.append(
-                    f"<form method='post'><p>{html.escape(item.get('code', 'Linked account'))}"
-                    f" — {html.escape(item['client'])}</p>"
-                    f"<input type='hidden' name='csrf' value='{self.csrf}'>"
-                    f"<input type='hidden' name='action' value='{action}'>"
-                    f"<input type='hidden' name='id' value='{html.escape(item['id'], quote=True)}'>"
-                    f"<button>{action.title()}</button></form>"
-                )
-        content.append("<p>Refresh to see new linking requests (up to ten seconds).</p>")
+        configuration = ""
+        if self.config_plan and self.config_plan.get("applied"):
+            configuration = self.form("apply-config", "Check applied configuration", self.config_plan["id"])
+        states, registry, selected, warnings = [], {}, [], []
         if self.config.get("supervisor_ingress"):
             try:
                 states = await self.ha("GET", "/api/states")
-                content.append("<h2>Configure Home Assistant</h2><p>Select only entities Alexa should control.</p>"
-                               f"<form method='post'><input type='hidden' name='csrf' value='{self.csrf}'>"
-                               "<input type='hidden' name='action' value='preview'>")
-                for state in states:
-                    entity = state["entity_id"]
-                    if entity.split(".")[0] in {
-                        "light", "switch", "script", "scene", "climate", "fan", "cover",
-                        "sensor", "binary_sensor", "media_player", "vacuum",
-                    }:
-                        content.append(
-                            f"<label><input type='checkbox' name='entity' "
-                            f"value='{html.escape(entity, quote=True)}'>{html.escape(entity)}</label><br>")
-                content.append("<button>Preview configuration</button></form>")
-            except (aiohttp.ClientError, RuntimeError, TimeoutError, ValueError):
-                LOGGER.error("Could not load local HA entity selection")
-                content.append("<p>Unable to load entities; check HA availability and app API permissions.</p>")
-        return web.Response(text="<!doctype html><meta charset='utf-8'>" + "".join(content),
-                            content_type="text/html",
-                            headers={"Cache-Control": "no-store", "X-Frame-Options": "SAMEORIGIN",
-                                     "Content-Security-Policy": "default-src 'none'; form-action 'self'; base-uri 'none'"})
+            except (aiohttp.ClientError, RuntimeError, TimeoutError, ValueError) as error:
+                warnings.append("Unable to load HA entities: " + (self.redact(str(error)) or type(error).__name__))
+            else:
+                try:
+                    registry = await self.registries()
+                except (aiohttp.ClientError, RuntimeError, TimeoutError, ValueError) as error:
+                    warnings.append("Room and device information unavailable; entities are shown unassigned. " +
+                                    (self.redact(str(error)) or type(error).__name__))
+                try:
+                    selected = selected_entities("/homeassistant")
+                except (ValueError, OSError) as error:
+                    warnings.append(self.redact(str(error)))
+        else:
+            warnings.append("For Docker/standalone installations, manage entity selection with configure-ha locally.")
+        if warnings:
+            LOGGER.warning("Dashboard: %s", " ".join(warnings))
+        return web.Response(
+            text=dashboard(states, registry, selected, self.csrf, self.ready, self.links, self.grants,
+                           configuration, " ".join(warnings)),
+            content_type="text/html", headers=self.page_headers(),
+        )
+
+    async def ui_state(self, request):
+        if not self.trusted(request):
+            raise web.HTTPForbidden()
+        return web.json_response({"connected": self.ready, "links": self.links, "grants": self.grants},
+                                 headers={"Cache-Control": "no-store"})
+
+    async def static(self, request):
+        if not self.trusted(request):
+            raise web.HTTPForbidden()
+        name = request.match_info["name"]
+        if name not in ("ui.css", "ui.js"):
+            raise web.HTTPNotFound()
+        return web.FileResponse(Path(__file__).parent / "static" / name,
+                                headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
 
     async def health(self, request):
         return web.json_response({"alive": True, "connected": self.ready,
@@ -306,8 +401,10 @@ class Connector:
 
     async def start(self):
         self.session = aiohttp.ClientSession()
-        app = web.Application(client_max_size=8192)
+        app = web.Application(client_max_size=131072)
         app.router.add_route("*", "/", self.ui)
+        app.router.add_get("/ui-state", self.ui_state)
+        app.router.add_get("/static/{name}", self.static)
         app.router.add_get("/health", self.health)
         runner = web.AppRunner(app)
         await runner.setup()

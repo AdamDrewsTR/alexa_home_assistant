@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -85,15 +86,17 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         files = {"configuration.yaml": "alexa: !include alexa_bridge.yaml\n"}
         with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "local-only"}), \
              patch("addon.connector.generate", return_value=files), \
-             patch("addon.connector.apply") as apply:
+             patch("addon.connector.apply", return_value="backup-stamp") as apply:
             response = await self.connector.configuration(None, MultiDict(action="preview", entity="light.test"))
             self.assertEqual(response.status, 200)
+            plan = self.connector.config_plan["id"]
             self.connector.fingerprints.return_value = {"configuration.yaml": "changed"}
-            response = await self.connector.configuration(None, MultiDict(action="apply-config"))
+            response = await self.connector.configuration(None, MultiDict(action="apply-config", plan=plan))
             self.assertEqual(response.status, 409)
             apply.assert_not_called()
             await self.connector.configuration(None, MultiDict(action="preview", entity="light.test"))
-            response = await self.connector.configuration(None, MultiDict(action="apply-config"))
+            plan = self.connector.config_plan["id"]
+            response = await self.connector.configuration(None, MultiDict(action="apply-config", plan=plan))
             self.assertEqual(response.status, 200)
             apply.assert_called_once_with("/homeassistant", files)
             self.connector.supervisor.assert_awaited_once_with("/core/check")
@@ -101,4 +104,86 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
             self.connector.supervisor.side_effect = RuntimeError("Configuration invalid")
             response = await self.connector.configuration(None, MultiDict(action="restart-ha"))
             self.assertEqual(response.status, 409)
+            self.connector.supervisor.assert_awaited_once_with("/core/check")
+
+    async def test_failed_check_preserves_preview_across_restart_and_retries_without_reapplying(self):
+        self.connector.config.update(supervisor_ingress=True,
+                                     event_credentials={"client_secret": "private-event-secret"})
+        self.connector.supervisor = AsyncMock(
+            side_effect=RuntimeError("Invalid YAML: private-event-secret at alexa_bridge.yaml"))
+        self.connector.fingerprints = Mock(return_value={"configuration.yaml": "unchanged"})
+        files = {"configuration.yaml": "alexa: !include alexa_bridge.yaml\n"}
+        with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "local-only"}), \
+             patch("addon.connector.generate", return_value=files), \
+             patch("addon.connector.apply", return_value="backup-stamp") as apply:
+            await self.connector.configuration(None, MultiDict(action="preview", entity="light.test"))
+            plan = self.connector.config_plan["id"]
+            with self.assertLogs("ha-alexa.connector", level="ERROR") as logs:
+                response = await self.connector.configuration(
+                    None, MultiDict(action="apply-config", plan=plan))
+            self.assertEqual(response.status, 409)
+            self.assertIn("Invalid YAML", response.text)
+            self.assertIn("backup-stamp", response.text)
+            self.assertNotIn("private-event-secret", response.text + str(logs.output))
+            self.assertEqual(self.connector.plan_path.stat().st_mode & 0o777, 0o600)
+            restarted = Connector(self.connector.config, self.temp.name)
+            try:
+                restarted.supervisor = AsyncMock()
+                restarted.fingerprints = self.connector.fingerprints
+                response = await restarted.configuration(
+                    None, MultiDict(action="apply-config", plan=plan))
+                self.assertEqual(response.status, 200)
+                apply.assert_called_once()
+                restarted.supervisor.assert_awaited_once_with("/core/check")
+                response = await restarted.configuration(
+                    None, MultiDict(action="apply-config", plan="stale-preview"))
+                self.assertEqual(response.status, 409)
+                self.assertIn("replaced", response.text)
+            finally:
+                restarted.db.close()
+
+    async def test_supervisor_check_surfaces_redacted_response_message(self):
+        self.connector.config["event_credentials"] = {"client_secret": "private-event-secret"}
+        response = AsyncMock()
+        response.status = 400
+        response.text.return_value = json.dumps({
+            "result": "error", "message": "Invalid config: private-event-secret in alexa_bridge.yaml"})
+        context = AsyncMock()
+        context.__aenter__.return_value = response
+        self.connector.session = Mock()
+        self.connector.session.post.return_value = context
+        with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "local-only"}):
+            with self.assertRaises(RuntimeError) as stopped:
+                await self.connector.supervisor("/core/check")
+        message = str(stopped.exception)
+        self.assertIn("/core/check HTTP 400", message)
+        self.assertIn("alexa_bridge.yaml", message)
+        self.assertNotIn("private-event-secret", message)
+
+    async def test_double_submission_does_not_apply_again_while_check_is_running(self):
+        self.connector.config["supervisor_ingress"] = True
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def check(path):
+            started.set()
+            await finish.wait()
+
+        self.connector.supervisor = AsyncMock(side_effect=check)
+        self.connector.fingerprints = Mock(return_value={"configuration.yaml": "unchanged"})
+        with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "local-only"}), \
+             patch("addon.connector.generate", return_value={"configuration.yaml": "alexa: {}\n"}), \
+             patch("addon.connector.apply", return_value="backup-stamp") as apply:
+            await self.connector.configuration(None, MultiDict(action="preview", entity="light.test"))
+            data = MultiDict(action="apply-config", plan=self.connector.config_plan["id"])
+            first = asyncio.create_task(self.connector.configuration(None, data))
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                second = await self.connector.configuration(None, data)
+                self.assertEqual(second.status, 409)
+                self.assertIn("in progress", second.text)
+            finally:
+                finish.set()
+                response = await first
+            self.assertEqual(response.status, 200)
+            apply.assert_called_once()
             self.connector.supervisor.assert_awaited_once_with("/core/check")

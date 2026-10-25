@@ -8,9 +8,27 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import TaggedScalar
+from ruamel.yaml.error import YAMLError
 
 
 MARKER = "# Managed by ha-alexa setup; edit entity selection through setup.\n"
+
+
+def selected_entities(directory):
+    path = Path(directory) / "alexa_bridge.yaml"
+    if not path.exists():
+        return []
+    text = path.read_text()
+    if not text.startswith(MARKER):
+        raise ValueError("Existing Alexa configuration is manually managed; selection was not imported")
+    try:
+        config = YAML(typ="safe").load(text)
+        entities = config["smart_home"]["filter"]["include_entities"]
+        if not isinstance(entities, list) or not all(isinstance(entity, str) for entity in entities):
+            raise ValueError("Invalid include_entities list")
+        return entities
+    except (YAMLError, KeyError, TypeError, ValueError) as error:
+        raise ValueError("Cannot read selected entities from alexa_bridge.yaml; inspect its filter") from error
 
 
 def atomic_write(path, content):
