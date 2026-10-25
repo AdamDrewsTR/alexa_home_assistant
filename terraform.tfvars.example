@@ -1,0 +1,7 @@
+name                = "ha-alexa"
+aws_region          = "us-east-1"
+home_assistant_url  = "https://ha.example.com"
+smart_home_skill_id = "amzn1.ask.skill.00000000-0000-0000-0000-000000000001"
+
+# Create a separate Custom skill to enable custom questions and commands.
+# custom_skill_id = "amzn1.ask.skill.00000000-0000-0000-0000-000000000002"

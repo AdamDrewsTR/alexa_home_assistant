@@ -1,0 +1,8 @@
+{
+  "name": "ha-alexa-tooling",
+  "private": true,
+  "description": "Official Alexa CLI for setup; AWS resources remain Terraform-managed",
+  "devDependencies": {
+    "ask-cli": "2.30.7"
+  }
+}

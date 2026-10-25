@@ -1,0 +1,38 @@
+# Merge into configuration.yaml; do not add a second alexa: block.
+alexa:
+  smart_home:
+    locale: en-US
+    filter:
+      include_entities:
+        - light.kitchen
+        - script.good_night
+    # Optional proactive state reporting; enable Send Alexa Events first.
+    # endpoint: https://api.amazonalexa.com/v3/events
+    # client_id: !secret alexa_event_client_id
+    # client_secret: !secret alexa_event_client_secret
+
+intent_script:
+  HomeStatusIntent:
+    speech:
+      type: plain
+      text: >-
+        The kitchen light is {{ states('light.kitchen') }}.
+  AMAZON.HelpIntent:
+    speech:
+      type: plain
+      text: You can ask me for the home status.
+  AMAZON.CancelIntent:
+    speech:
+      type: plain
+      text: Goodbye.
+  AMAZON.StopIntent:
+    speech:
+      type: plain
+      text: Goodbye.
+  AMAZON.FallbackIntent:
+    speech:
+      type: plain
+      text: I did not understand. Try asking for the home status.
+
+# For "Alexa, open home assistant", also add an intent_script entry whose
+# key is your Custom skill ID, with a welcome speech and optional reprompt.

@@ -1,0 +1,16 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+.build/
+__pycache__/
+.venv/
+.DS_Store
+.setup/
+*.tfvars.json
+*.egg-info/
+*.alexa-backup-*
+node_modules/

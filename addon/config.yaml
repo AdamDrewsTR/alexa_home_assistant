@@ -1,0 +1,41 @@
+name: Alexa Outbound Connector
+version: "0.1.0"
+slug: alexa_connector
+description: Private outbound Alexa relay with local account-link approval
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+homeassistant_api: true
+hassio_api: true
+hassio_role: homeassistant
+map:
+  - type: homeassistant_config
+    read_only: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:account-voice
+panel_title: Alexa Connector
+options:
+  websocket_url: ""
+  connector_key: ""
+  supervisor_ingress: true
+  locale: en-US
+  custom_skill_id: ""
+  event_credentials:
+    endpoint: https://api.amazonalexa.com/v3/events
+    client_id: ""
+    client_secret: ""
+schema:
+  websocket_url: url
+  connector_key: password
+  supervisor_ingress: bool
+  locale: str
+  custom_skill_id: str
+  event_credentials:
+    endpoint: url
+    client_id: str
+    client_secret: password
+watchdog: http://[HOST]:8099/health
