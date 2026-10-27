@@ -46,6 +46,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn("smart_home:", files["alexa_bridge.yaml"])
         self.assertIn("stable-light", files["alexa_device_endpoints.yaml"])
         self.assertIn("custom_components/alexa_device_endpoints/manifest.json", files)
+        self.assertIn("custom_components/alexa_device_endpoints/supplemental.py", files)
         apply(self.directory, files)
         self.assertEqual(selected_entities(self.directory), ["light.kitchen", "lock.front"])
         self.assertEqual(selected_entities(self.directory, [

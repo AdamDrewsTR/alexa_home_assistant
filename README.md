@@ -13,7 +13,10 @@ devices as bundled Alexa endpoints.
 
 Home Assistant remains responsible for capability adapters, device filters,
 actions, and speech. Our local integration composes those adapters into native
-device endpoints and routes requests back to HA's original Alexa handlers.
+device endpoints and routes requests back to HA's original Alexa handlers. A
+small supplemental layer adds Alexa's standard humidity and battery-level
+reporting where HA's adapter registry has no corresponding interface, plus
+basic siren and lawn-mower power control.
 This does not replace Alexa with HA Assist or provide local-only voice control.
 
 ## Outbound relay setup (recommended)
@@ -77,10 +80,20 @@ bulk selection help curate exposure without reorganizing HA. Selected entities
 on a physical HA device are merged into one Alexa endpoint, including supported
 controls and sensors. Additional on/off controls become named toggles. Sensors
 or duplicate capabilities that Alexa cannot represent are explained in the
-dashboard rather than silently exported as separate devices. Coverage follows
-HA's native adapters, including lights, plugs, locks, alarms, garage doors,
-covers, climate, fans, media, and supported sensors; Alexa's capability/region
-limits and HA's PIN/security rules still apply.
+dashboard rather than silently exported as separate devices. Coverage includes
+HA's native adapters (lights, plugs, locks, alarms, garage doors, covers,
+climate, fans, media, vacuums, valves, numeric controls, scenes, and supported
+sensors) plus supplemental Alexa-native humidity, weather, and battery-level
+reporting and basic siren/lawn-mower controls. Alexa's capability/locale limits
+and HA's PIN/security rules still apply. Alexa's Smart Home API has no
+equivalent interfaces for every Matter sensor type, so illuminance, air-quality,
+smoke/CO, pressure, flow, and energy readings are not claimed as supported.
+Matter Hub can expose additional Matter device types because Alexa handles that
+connection through its native Matter support. That is a different API path:
+the public interfaces available to a third-party Smart Home skill do not include
+equivalent sensor interfaces. Matter Hub is the better fit when those Matter
+sensor types or simpler setup are the priority; this project is an alternative,
+not a feature-complete replacement.
 
 Setup previews and installs `custom_components/alexa_device_endpoints` alongside the
 owned YAML, with backups. It replaces managed per-entity Smart Home configuration,
@@ -107,7 +120,7 @@ protocol for large discovery responses. A mixed-version deployment cannot
 complete commands.
 
 In HA, open **Settings > Apps > App store**, check for updates, and update
-**Alexa Outbound Connector** to **0.2.2**. Open its Web UI, select devices,
+**Alexa Outbound Connector** to **0.2.3**. Open its Web UI, select devices,
 preview/back up/apply configuration, and approve the HA restart only after
 validation passes. Confirm **Native device endpoints active** after startup.
 Remove the old individual Alexa devices, disable/re-enable and relink the

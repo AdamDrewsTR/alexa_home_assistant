@@ -13,7 +13,7 @@ from ruamel.yaml.error import YAMLError
 
 MARKER = "# Managed by ha-alexa setup; edit entity selection through setup.\n"
 COMPONENT = Path("custom_components/alexa_device_endpoints")
-COMPONENT_FILES = ("__init__.py", "bundles.py", "manifest.json")
+COMPONENT_FILES = ("__init__.py", "bundles.py", "supplemental.py", "manifest.json")
 
 
 def selected_entities(directory, registry_entities=()):

@@ -21,6 +21,7 @@ from homeassistant.components.alexa.state_report import (
     AlexaDirective, AlexaResponse, async_send_changereport_message,
     async_send_doorbell_event_message, valid_doorbell_timestamp,
 )
+from homeassistant.components.lawn_mower import LawnMowerEntityFeature
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED
 from homeassistant.core import Context, callback
@@ -30,6 +31,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 
 from .bundles import Bundle, stable_id
+from .supplemental import LOCAL_ADAPTERS, supplemental_capabilities
 
 DOMAIN = "alexa_device_endpoints"
 LOGGER = logging.getLogger(__name__)
@@ -142,10 +144,13 @@ class DeviceConfig(AbstractConfig):
             if expected_identity and (entry is None or entry.id != expected_identity):
                 warnings.append(f"{entity_id}: selected registry identity was removed; select its replacement explicitly")
                 continue
-            if not state or (entry and entry.disabled_by) or state.domain not in ENTITY_ADAPTERS:
-                warnings.append(f"{entity_id}: unavailable, disabled, or unsupported by HA's Alexa adapter")
+            adapter_class = None
+            if state:
+                adapter_class = ENTITY_ADAPTERS.get(state.domain) or LOCAL_ADAPTERS.get(state.domain)
+            if not state or (entry and entry.disabled_by) or adapter_class is None:
+                warnings.append(f"{entity_id}: unavailable, disabled, or unsupported by an Alexa adapter")
                 continue
-            adapter = ENTITY_ADAPTERS[state.domain](self.hass, self, state)
+            adapter = adapter_class(self.hass, self, state)
             try:
                 discovery = adapter.serialize_discovery()
             except (ValueError, TypeError, KeyError):
@@ -153,9 +158,12 @@ class DeviceConfig(AbstractConfig):
                 warnings.append(f"{entity_id}: HA could not serialize its Alexa capabilities")
                 continue
             caps = discovery["capabilities"]
-            if not any(cap["interface"] not in ("Alexa", "Alexa.EndpointHealth") for cap in caps):
+            supplemental = supplemental_capabilities(self.hass, self, state)
+            if (not supplemental
+                    and not any(cap["interface"] not in ("Alexa", "Alexa.EndpointHealth") for cap in caps)):
                 warnings.append(f"{entity_id}: no Alexa capabilities supported in this locale")
                 continue
+            caps.extend(capability.serialize_discovery() for capability in supplemental)
             device = devices.async_get(entry.device_id) if entry and entry.device_id else None
             identity = entry.id if entry else entity_id
             # Scenes and cameras have special responses/lifecycles and remain separate endpoints.
@@ -167,7 +175,8 @@ class DeviceConfig(AbstractConfig):
                 "model": device.model if device else "", "members": [],
             })
             group["members"].append({"entity_id": entity_id, "identity": identity, "adapter": adapter,
-                                     "name": adapter.friendly_name(), "discovery": discovery})
+                                     "name": adapter.friendly_name(), "discovery": discovery,
+                                     "supplemental": supplemental})
         bundles = {}
         for identity, group in grouped.items():
             name = re.sub(r"[^\w\s]", " ", group["name"] or "Home device", flags=re.UNICODE)
@@ -368,7 +377,21 @@ class DeviceView(HomeAssistantView):
             if not handler:
                 return directive.error(error_type="INVALID_DIRECTIVE",
                                        error_message="Unsupported Alexa command").serialize()
-            response = (await handler(self.config.hass, self.config, native, context)).serialize()
+            if namespace == "Alexa.PowerController" and member["entity_id"].startswith("lawn_mower."):
+                features = native.entity.attributes.get("supported_features", 0)
+                if native.name == "TurnOn":
+                    service = "start_mowing"
+                elif features & LawnMowerEntityFeature.STOP:
+                    service = "stop"
+                else:
+                    service = "pause"
+                await self.config.hass.services.async_call(
+                    "lawn_mower", service, {"entity_id": member["entity_id"]},
+                    blocking=False, context=context,
+                )
+                response = directive.response().serialize()
+            else:
+                response = (await handler(self.config.hass, self.config, native, context)).serialize()
             if response["event"]["header"]["name"] != "ErrorResponse":
                 response["context"] = {"properties": bundle.response_properties(member, response)}
             # The native handler retains the original bundled endpoint and correlation token.
@@ -395,7 +418,7 @@ class DeviceStatusView(HomeAssistantView):
              "entities": [member["entity_id"] for member in bundle.members],
              "capabilities": [cap["interface"] for cap in bundle.capabilities]}
             for key, bundle in bundles.items()], "warnings": warnings,
-                          "supported_domains": sorted(ENTITY_ADAPTERS)})
+                          "supported_domains": sorted(set(ENTITY_ADAPTERS) | set(LOCAL_ADAPTERS))})
 
 
 async def async_setup(hass, config):

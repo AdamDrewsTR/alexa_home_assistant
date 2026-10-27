@@ -27,9 +27,19 @@ HA registry IDs also keep selected entities selected after renaming.
 Coverage follows HA's Alexa adapter registry, not a fixed device shortlist:
 lights, plugs/switches, supported sensors, locks, security panels, garage doors,
 covers, fans, thermostats, media players, vacuums, humidifiers, water heaters,
-valves, numeric controls, and other native adapters. Locks and alarm commands
-use the original HA handlers and service-level authorization/PIN validation.
-Alexa's regional, device-class, and capability restrictions still apply.
+valves, numeric controls, scenes, scripts, cameras, and other native adapters.
+Supplemental Alexa-native mappings add humidity sensors, weather temperature
+and humidity, battery-level sensors, and basic siren/lawn-mower power control.
+Alexa's Smart Home API has no equivalent interfaces for every Matter sensor
+type; illuminance, air quality, smoke/CO, pressure, flow, and energy readings
+are not supported by this integration. Locks and alarm commands use HA handlers
+and service-level authorization/PIN validation. Alexa's locale and capability
+restrictions still apply.
+Matter Hub can expose additional Matter device types through Alexa's native
+Matter support; that path is distinct from the public interfaces available to a
+third-party Smart Home skill. Matter Hub is a better fit for those sensor types
+or simpler setup, while this integration is an alternative rather than a
+feature-complete replacement.
 
 Additional on/off controls use named `Alexa.ToggleController` instances.
 Range, mode, and toggle components receive stable instance IDs. When Alexa
@@ -51,7 +61,7 @@ Update both the AWS relay (review/apply the Terraform plan) and connector:
 version 0.2.0 uses bounded response fragments for larger discovery results.
 Mixed relay/connector versions cannot complete commands. Publish the committed
 code to the app repository's default branch, then in **Settings > Apps > App
-store** check for updates and update this app to **0.2.2**. The wizard's
+store** check for updates and update this app to **0.2.3**. The wizard's
 `install-ha` command does not upgrade an already installed app.
 See the [repository upgrade instructions](../README.md#upgrading-an-existing-ha-os-installation)
 for the exact Terraform commands. Check Alexa routines referencing old devices

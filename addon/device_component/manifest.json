@@ -1,7 +1,7 @@
 {
   "domain": "alexa_device_endpoints",
   "name": "Alexa Device Endpoints",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "dependencies": ["alexa"],
   "codeowners": [],
   "documentation": "https://www.home-assistant.io/integrations/alexa.smart_home/",

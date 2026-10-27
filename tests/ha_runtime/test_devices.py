@@ -18,6 +18,7 @@ from homeassistant.core import HomeAssistant, Context
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components.vacuum import VacuumEntityFeature
 from homeassistant.components.water_heater import WaterHeaterEntityFeature
+from homeassistant.components.lawn_mower import LawnMowerEntityFeature
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.setup import async_setup_component
@@ -215,6 +216,7 @@ class NativeDeviceTests(unittest.IsolatedAsyncioTestCase):
             "light": ("on", {"supported_color_modes": ["brightness"], "color_mode": "brightness", "brightness": 128}),
             "switch": ("on", {}),
             "sensor": ("21", {"device_class": "temperature", "unit_of_measurement": "°C"}),
+            "sensor_humidity": ("52", {"device_class": "humidity", "unit_of_measurement": "%"}),
             "binary_sensor": ("off", {"device_class": "motion"}),
             "lock": ("locked", {}),
             "alarm_control_panel": ("disarmed", {"code_arm_required": False, "supported_features": 63}),
@@ -230,18 +232,130 @@ class NativeDeviceTests(unittest.IsolatedAsyncioTestCase):
             "number": ("30", {"min": 0, "max": 100, "step": 1}),
             "input_boolean": ("on", {}),
             "button": ("unknown", {}),
+            "input_button": ("unknown", {}),
+            "input_number": ("30", {"min": 0, "max": 100, "step": 1}),
             "remote": ("off", {}),
             "timer": ("idle", {}),
+            "alert": ("on", {}),
+            "automation": ("on", {}),
+            "group": ("on", {"entity_id": ["switch.example"]}),
+            "image_processing": ("on", {"confidence": 95}),
+            "scene": ("unknown", {}),
+            "script": ("off", {}),
+            "weather": ("sunny", {"temperature": 21, "temperature_unit": "°C", "humidity": 44}),
         }
         for domain, (state, attributes) in samples.items():
+            entity_domain = "sensor" if domain == "sensor_humidity" else domain
+            entity_name = "humidity" if domain == "sensor_humidity" else "example"
             self.device = self.devices.async_get_or_create(
                 config_entry_id=self.config_entry_id,
                 identifiers={("example", domain)}, name=f"Example {domain}")
-            self.add_entity(f"{domain}.example", state, attributes)
+            self.add_entity(f"{entity_domain}.{entity_name}", state, attributes)
         await self.configure()
         endpoints = (await self.request("Alexa.Discovery", "Discover"))["event"]["payload"]["endpoints"]
         self.assertEqual(len(endpoints), len(samples), self.config.bundles()[1])
         self.assertEqual(len({endpoint["endpointId"] for endpoint in endpoints}), len(samples))
+
+    async def test_weather_humidity_and_battery_inventory_capabilities_report_state(self):
+        self.add_entity("sensor.room_humidity", "47.5", {
+            "device_class": "humidity", "unit_of_measurement": "%"})
+        self.add_entity("sensor.room_battery", "83", {
+            "device_class": "battery", "unit_of_measurement": "%"})
+        self.add_entity("sensor.room_remote_battery", "62", {
+            "device_class": "battery", "unit_of_measurement": "%"})
+        climate_device = self.devices.async_get_or_create(
+            config_entry_id=self.config_entry_id, identifiers={("example", "climate")},
+            name="Bedroom thermostat")
+        self.device = climate_device
+        self.add_entity("climate.bedroom", "heat", {
+            "supported_features": 1, "hvac_modes": ["heat", "off"], "temperature": 21,
+            "current_temperature": 20, "current_humidity": 38, "min_temp": 7, "max_temp": 30})
+        weather_device = self.devices.async_get_or_create(
+            config_entry_id=self.config_entry_id, identifiers={("example", "weather")},
+            name="Outdoor weather")
+        self.device = weather_device
+        self.add_entity("weather.outdoor", "sunny", {
+            "temperature": 18.5, "temperature_unit": "°C", "humidity": 61})
+        await self.configure()
+        endpoints = (await self.request("Alexa.Discovery", "Discover"))["event"]["payload"]["endpoints"]
+        self.assertEqual(len(endpoints), 3)
+        bedroom = next(endpoint for endpoint in endpoints if endpoint["friendlyName"] == "Living room device")
+        thermostat = next(endpoint for endpoint in endpoints
+                          if endpoint["friendlyName"] == "Bedroom thermostat")
+        outside = next(endpoint for endpoint in endpoints if endpoint["friendlyName"] == "Outdoor weather")
+        bedroom_caps = {cap["interface"]: cap for cap in bedroom["capabilities"]}
+        self.assertIn("Alexa.HumiditySensor", bedroom_caps)
+        batteries = [cap for cap in bedroom["capabilities"]
+                     if cap["interface"] == "Alexa.InventoryLevelSensor"]
+        self.assertEqual(len(batteries), 2)
+        self.assertEqual(len({cap["instance"] for cap in batteries}), 2)
+        self.assertTrue(all(cap["configuration"] == {"measurement": {"@type": "percentage"}}
+                            for cap in batteries))
+        self.assertIn("Alexa.HumiditySensor",
+                      {cap["interface"] for cap in thermostat["capabilities"]})
+        outside_caps = {cap["interface"] for cap in outside["capabilities"]}
+        self.assertTrue({"Alexa.TemperatureSensor", "Alexa.HumiditySensor"} <= outside_caps)
+        room_state = await self.request("Alexa", "ReportState", bedroom["endpointId"])
+        properties = {(item["namespace"], item["name"]): item["value"]
+                      for item in room_state["context"]["properties"]}
+        self.assertEqual(properties[("Alexa.HumiditySensor", "relativeHumidity")], 47.5)
+        levels = {item["instance"]: item["value"]["value"]
+                  for item in room_state["context"]["properties"]
+                  if item["namespace"] == "Alexa.InventoryLevelSensor"}
+        self.assertEqual(set(levels.values()), {"83.0", "62.0"})
+        thermostat_state = await self.request("Alexa", "ReportState", thermostat["endpointId"])
+        self.assertIn(("Alexa.HumiditySensor", "relativeHumidity"),
+                      {(item["namespace"], item["name"])
+                       for item in thermostat_state["context"]["properties"]})
+        thermostat_humidity = next(item["value"] for item in thermostat_state["context"]["properties"]
+                                   if item["namespace"] == "Alexa.HumiditySensor")
+        self.assertEqual(thermostat_humidity, 38.0)
+        outdoor_state = await self.request("Alexa", "ReportState", outside["endpointId"])
+        outdoor_properties = {(item["namespace"], item["name"]): item["value"]
+                              for item in outdoor_state["context"]["properties"]}
+        self.assertEqual(outdoor_properties[("Alexa.TemperatureSensor", "temperature")],
+                         {"value": 18.5, "scale": "CELSIUS"})
+        self.assertEqual(outdoor_properties[("Alexa.HumiditySensor", "relativeHumidity")], 61.0)
+        await self.config.set_authorized(True)
+        self.config.publish = AsyncMock()
+        self.config.pending.update(("sensor.room_humidity", "sensor.room_battery"))
+        with patch("addon.device_component.async_send_changereport_message",
+                   new_callable=AsyncMock) as send:
+            await self.config.report_changes()
+        changed = send.call_args.args[3]
+        self.assertTrue({"Alexa.HumiditySensor", "Alexa.InventoryLevelSensor"} <=
+                        {item["namespace"] for item in changed})
+
+    async def test_siren_and_lawn_mower_use_alexa_power_commands(self):
+        self.device = self.devices.async_get_or_create(
+            config_entry_id=self.config_entry_id, identifiers={("example", "siren")}, name="Siren")
+        self.add_entity("siren.alarm", "off")
+        self.device = self.devices.async_get_or_create(
+            config_entry_id=self.config_entry_id, identifiers={("example", "mower")}, name="Mower")
+        self.add_entity("lawn_mower.mower", "idle", {
+            "supported_features": int(LawnMowerEntityFeature.START_MOWING | LawnMowerEntityFeature.PAUSE)})
+        await self.configure()
+        endpoints = (await self.request("Alexa.Discovery", "Discover"))["event"]["payload"]["endpoints"]
+        by_name = {endpoint["friendlyName"]: endpoint for endpoint in endpoints}
+        self.assertEqual(set(by_name), {"Siren", "Mower"})
+        self.assertTrue(all(any(cap["interface"] == "Alexa.PowerController"
+                                for cap in endpoint["capabilities"])
+                            for endpoint in endpoints))
+        calls = []
+        self.hass.services.async_register("siren", "turn_on", lambda call: calls.append(call))
+        self.hass.services.async_register("lawn_mower", "start_mowing", lambda call: calls.append(call))
+        self.hass.services.async_register("lawn_mower", "pause", lambda call: calls.append(call))
+        siren_id = by_name["Siren"]["endpointId"]
+        mower_id = by_name["Mower"]["endpointId"]
+        for endpoint_id, command in ((siren_id, "TurnOn"), (mower_id, "TurnOn"), (mower_id, "TurnOff")):
+            response = await self.request("Alexa.PowerController", command, endpoint_id)
+            self.assertEqual(response["event"]["header"]["name"], "Response")
+        await self.hass.async_block_till_done()
+        self.assertCountEqual([(call.domain, call.service, call.data["entity_id"]) for call in calls], [
+            ("siren", "turn_on", "siren.alarm"),
+            ("lawn_mower", "start_mowing", "lawn_mower.mower"),
+            ("lawn_mower", "pause", "lawn_mower.mower"),
+        ])
 
     async def test_installed_component_loads_validates_and_registers_authenticated_views(self):
         target = Path(self.temp.name) / "custom_components/alexa_device_endpoints"

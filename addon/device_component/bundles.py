@@ -5,7 +5,10 @@ from copy import deepcopy
 from hashlib import sha256
 
 
-GENERIC = {"Alexa.RangeController", "Alexa.ModeController", "Alexa.ToggleController"}
+GENERIC = {
+    "Alexa.RangeController", "Alexa.ModeController", "Alexa.ToggleController",
+    "Alexa.InventoryLevelSensor",
+}
 COMMON = {"Alexa", "Alexa.EndpointHealth"}
 PRIORITY = {"alarm_control_panel": 0, "lock": 1, "climate": 2, "light": 3,
             "fan": 4, "cover": 5, "switch": 6}
@@ -108,6 +111,8 @@ class Bundle:
         properties, health = [], []
         for member in self.members:
             values = list(member["adapter"].serialize_properties())
+            for capability in member.get("supplemental", ()):
+                values.extend(capability.serialize_properties())
             properties.extend(self.translate_properties(member["entity_id"], values))
             health.extend(prop for prop in values if prop["namespace"] == "Alexa.EndpointHealth")
         if health:
