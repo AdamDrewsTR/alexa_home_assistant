@@ -223,6 +223,8 @@ class Connector:
                     result = {"status": 200, "body": await self.ha("POST", message["path"], event)}
             except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError) as error:
                 detail = self.redact(str(error)) or type(error).__name__
+                if is_phone and phone:
+                    detail = detail.replace(phone["webhook_id"], "[redacted]")
                 LOGGER.error("HA command %s failed: %s", "phone" if is_phone else message["path"], detail)
                 result = {"status": 502}
             raw = json.dumps(result)

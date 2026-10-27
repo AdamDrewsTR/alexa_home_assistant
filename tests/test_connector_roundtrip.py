@@ -21,7 +21,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
         async def ha(request):
             calls.append(await request.json())
-            return web.json_response({})
+            return web.json_response({}, status=201 if calls[-1]["type"] == "register_sensor" else 200)
 
         ha_app = web.Application()
         ha_app.router.add_post("/api/webhook/" + webhook, ha)
@@ -43,10 +43,15 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(calls, [payload])
                     self.assertEqual(json.loads(json.loads(socket.send_str.call_args.args[0])["data"]),
                                      {"status": 200, "body": {}})
+                    await connector.dispatch({
+                        "id": "c" * 32, "phone": phone_id, "event": {"type": "register_sensor", "data": {}},
+                        "expires": int(time.time()) + 10,
+                    }, socket)
+                    self.assertEqual(json.loads(json.loads(socket.send_str.call_args.args[0])["data"])["status"], 200)
                     connector.phones.clear()
                     await connector.dispatch({"id": "f" * 32, "phone": phone_id, "event": payload,
                                               "expires": int(time.time()) + 10}, socket)
-                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(len(calls), 2)
                     self.assertEqual(json.loads(json.loads(socket.send_str.call_args.args[0])["data"])["status"], 403)
             finally:
                 connector.db.close()
