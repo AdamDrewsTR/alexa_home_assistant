@@ -1,7 +1,7 @@
 name: Alexa Outbound Connector
-version: "0.2.3"
+version: "0.3.0"
 slug: alexa_connector
-description: Private outbound Alexa relay with local account-link approval
+description: Private outbound Alexa and Companion phone location relay
 arch:
   - aarch64
   - amd64

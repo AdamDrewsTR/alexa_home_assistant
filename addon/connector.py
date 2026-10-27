@@ -9,6 +9,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -29,6 +30,8 @@ LOGGER = logging.getLogger("ha-alexa.connector")
 MAX_MESSAGE = 28_000
 MAX_RESPONSE = 256_000
 RESPONSE_CHUNK = 12_000
+PHONE_TYPES = {"update_location", "get_config", "get_zones", "update_registration",
+               "register_sensor", "update_sensor_states"}
 
 
 class HAError(RuntimeError):
@@ -60,6 +63,11 @@ class Connector:
             LOGGER.warning("Saved preview uses the retired alexa_devices domain; create a new configuration preview")
             self.config_plan = None
         self.configuration_lock = asyncio.Lock()
+        self.phones_path = self.data_dir / "phones.json"
+        self.phones = json.loads(self.phones_path.read_text()) if self.phones_path.exists() else {}
+        self.synced_phones = []
+        self.phone_relay_url = ""
+        self.phone_updates = {}
 
     def redact(self, text):
         for value in (
@@ -69,6 +77,8 @@ class Connector:
         ):
             if value:
                 text = text.replace(value, "[redacted]")
+        for phone in self.phones.values():
+            text = text.replace(phone["webhook_id"], "[redacted]")
         return text
 
     async def ha(self, method, path, body=None):
@@ -97,7 +107,9 @@ class Connector:
                         auth = await refreshed.json()
                         self.config["ha_token"] = token = auth["access_token"]
                     continue
-                if response.status != 200:
+                if response.status != 200 and not (
+                    response.status == 201 and method == "POST" and path.startswith("/api/webhook/")
+                ):
                     hint = ("; Alexa endpoint is not loaded: validate configuration and restart HA"
                             if response.status == 404 and path in ("/api/alexa", "/api/alexa/smart_home")
                             else "")
@@ -162,7 +174,7 @@ class Connector:
     def page(self, content, status=200):
         return web.Response(
             status=status, text=document("<main class='result-page'>" + content +
-                                         "<p><a href=''>Back to your home</a></p></main>", self.csrf),
+                                         "<p><a href='./'>Back to your home</a></p></main>", self.csrf),
             content_type="text/html", headers=self.page_headers(),
         )
 
@@ -175,7 +187,10 @@ class Connector:
     async def dispatch(self, message, socket):
         async with self.semaphore:
             request_id = message.get("id", "")
-            if (message.get("path") not in ("/api/alexa", "/api/alexa/smart_home")
+            phone_id = message.get("phone")
+            phone = self.phones.get(phone_id) if isinstance(phone_id, str) else None
+            is_phone = "phone" in message
+            if ((not is_phone and message.get("path") not in ("/api/alexa", "/api/alexa/smart_home"))
                     or not isinstance(request_id, str) or len(request_id) != 32):
                 LOGGER.warning("Rejected invalid cloud command")
                 return
@@ -192,10 +207,23 @@ class Connector:
                 event = message["event"]
                 if not isinstance(event, dict):
                     raise ValueError("Invalid event")
-                result = {"status": 200, "body": await self.ha("POST", message["path"], event)}
+                if is_phone:
+                    if (not phone or not isinstance(event.get("type"), str) or event["type"] not in PHONE_TYPES
+                            or len(json.dumps(event).encode()) > 20_000
+                            or type(message.get("expires")) is not int
+                            or not time.time() < message["expires"] <= time.time() + 15):
+                        result = {"status": 403}
+                        LOGGER.warning("Rejected unenrolled, expired, or unsupported phone request")
+                    else:
+                        result = {"status": 200, "body": await self.ha(
+                            "POST", "/api/webhook/" + phone["webhook_id"], event)}
+                        if event["type"] == "update_location":
+                            self.phone_updates[message["phone"]] = time.time()
+                else:
+                    result = {"status": 200, "body": await self.ha("POST", message["path"], event)}
             except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError) as error:
                 detail = self.redact(str(error)) or type(error).__name__
-                LOGGER.error("HA command %s failed: %s", message["path"], detail)
+                LOGGER.error("HA command %s failed: %s", "phone" if is_phone else message["path"], detail)
                 result = {"status": 502}
             raw = json.dumps(result)
             if len(raw) > MAX_RESPONSE:
@@ -236,6 +264,8 @@ class Connector:
                                     self.links = body.get("links", [])
                                     self.grants = body.get("grants", [])
                                     self.last_poll = time.monotonic()
+                                    self.synced_phones = body.get("phones", [])
+                                    self.phone_relay_url = body.get("phone_relay_url", "")
                                 elif body.get("type") == "request":
                                     if len(self.tasks) >= 4:
                                         LOGGER.warning("Connector busy; rejecting excess command")
@@ -256,13 +286,84 @@ class Connector:
                 self.ready = False
                 self.ws = None
                 self.links, self.grants = [], []
+                self.synced_phones = []
             await asyncio.sleep(delay + secrets.randbelow(1000) / 1000)
             delay = min(delay * 2, 60)
 
     async def poll(self, socket):
         while not socket.closed:
-            await socket.send_json({"action": "poll"})
+            await socket.send_json({"action": "poll", "phones": list(self.phones)})
             await asyncio.sleep(10)
+
+    async def phones_ui(self, request):
+        if not self.trusted(request):
+            raise web.HTTPForbidden()
+        if request.method == "POST":
+            data = await request.post()
+            if not hmac.compare_digest(data.get("csrf", ""), self.csrf):
+                raise web.HTTPForbidden()
+            phones = dict(self.phones)
+            if data.get("action") == "enroll":
+                webhook = data.get("webhook_id", "").strip()
+                name = data.get("name", "").strip()
+                if not re.fullmatch(r"[a-f0-9]{64}", webhook) or not 1 <= len(name) <= 80:
+                    raise web.HTTPBadRequest(text="Provide a phone name and its 64-character HA webhook ID.")
+                try:
+                    candidates = await self.ha("GET", "/api/alexa_device_endpoints/phones")
+                except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError) as error:
+                    LOGGER.warning("Phone enrollment validation unavailable: %s", self.redact(str(error)))
+                    raise web.HTTPServiceUnavailable(
+                        text="Cannot verify phone registration. Update/apply the local integration and restart HA.") from error
+                if not any(candidate["webhook_id"] == webhook for candidate in candidates):
+                    raise web.HTTPBadRequest(text="This phone is not registered with HA. Register it locally first.")
+                key = hashlib.sha256(webhook.encode()).hexdigest()
+                if key not in phones and len(phones) >= 20:
+                    raise web.HTTPBadRequest(text="At most 20 phones may be enrolled.")
+                phones[key] = {"name": name, "webhook_id": webhook}
+            elif data.get("action") == "remove":
+                phones.pop(data.get("id", ""), None)
+            else:
+                raise web.HTTPBadRequest()
+            atomic_write(self.phones_path, json.dumps(phones))
+            self.phones = phones
+            if self.ws and not self.ws.closed:
+                await self.ws.send_json({"action": "poll", "phones": list(phones)})
+            raise web.HTTPSeeOther(location="phones")
+        content = ("<h1>Companion phone location relay</h1>"
+                   "<p>Experimental: location and phone sensor sync only; no remote dashboards or service calls. "
+                   "Register the official Companion app with HA on home Wi-Fi first. "
+                   "Keep its internal URL and home Wi-Fi SSID configured. Set its external URL to:</p>")
+        content += "<pre>" + html.escape(self.phone_relay_url or "Waiting for updated cloud relay") + "</pre>"
+        content += ("<p>Enable Always/background location permission. Associate the existing phone tracker with "
+                    "your person in HA. Test on cellular with the phone locked before relying on automations. "
+                    "A missed update leaves the last known location; it does not mean away.</p>")
+        for key, phone in self.phones.items():
+            status = "Cloud enrolled" if self.ready and key in self.synced_phones else "Waiting for cloud sync"
+            updated = self.phone_updates.get(key)
+            age = f"; last location accepted {int(time.time() - updated)} seconds ago" if updated else "; no location received this session"
+            content += ("<h2>" + html.escape(phone["name"]) + "</h2><p>" + status + age + "</p>"
+                        f"<form method='post'><input type='hidden' name='csrf' value='{self.csrf}'>"
+                        f"<input type='hidden' name='id' value='{key}'>"
+                        "<input type='hidden' name='action' value='remove'>"
+                        "<button>Revoke phone</button></form>")
+        content += ("<h2>Enroll a phone</h2><p>The list below contains phones already registered with HA's "
+                    "mobile_app integration. Enroll only devices whose location you have permission to share. "
+                    "Each phone must grant its own background location permission.</p>")
+        try:
+            candidates = await self.ha("GET", "/api/alexa_device_endpoints/phones")
+            for candidate in candidates:
+                content += (f"<form method='post'><input type='hidden' name='csrf' value='{self.csrf}'>"
+                            f"<input type='hidden' name='webhook_id' value='{html.escape(candidate['webhook_id'], quote=True)}'>"
+                            f"<input type='hidden' name='name' value='{html.escape(candidate['name'], quote=True)}'>"
+                            "<input type='hidden' name='action' value='enroll'>"
+                            "<button>Enroll " + html.escape(candidate["name"]) +
+                            "</button></form>")
+        except (aiohttp.ClientError, TimeoutError, ValueError, RuntimeError) as error:
+            LOGGER.warning("Phone enrollment list unavailable: %s", self.redact(str(error)))
+            content += "<p>Phone list unavailable. Update/apply the local integration and restart HA.</p>"
+        content += ("<p>Revocation takes effect locally immediately. Cloud enrollment expires within two minutes "
+                    "without connector polling. Re-registering the app requires enrolling its new webhook.</p>")
+        return self.page(content)
 
     def trusted(self, request):
         peer = request.remote
@@ -447,6 +548,7 @@ class Connector:
         self.session = aiohttp.ClientSession()
         app = web.Application(client_max_size=131072)
         app.router.add_route("*", "/", self.ui)
+        app.router.add_route("*", "/phones", self.phones_ui)
         app.router.add_get("/ui-state", self.ui_state)
         app.router.add_get("/static/{name}", self.static)
         app.router.add_get("/health", self.health)

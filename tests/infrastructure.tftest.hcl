@@ -74,8 +74,8 @@ run "relay_without_public_ha" {
     error_message = "Transient relay data must expire, using on-demand billing."
   }
   assert {
-    condition     = length(aws_apigatewayv2_route.http) == 3 && length(aws_apigatewayv2_route.socket) == 3
-    error_message = "Publish only OAuth routes and the authenticated connector socket."
+    condition     = length(aws_apigatewayv2_route.http) == 4 && length(aws_apigatewayv2_route.socket) == 3 && contains(keys(aws_apigatewayv2_route.http), "POST /api/webhook/{webhook_id}")
+    error_message = "Publish only OAuth, enrolled phone webhooks, and the authenticated connector socket."
   }
 }
 
