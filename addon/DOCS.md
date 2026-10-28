@@ -144,6 +144,12 @@ an older one, and concurrent edits require a fresh preview.
 In Alexa, start account linking. Compare the displayed code with the pending
 request here and approve only if you initiated it. Refresh the page if needed.
 Revoke linked accounts here when removing access.
+The account panel distinguishes a disconnected connector, a pending first
+cloud reply, stale status, and a confirmed empty account list. An unavailable
+list is not evidence that accounts were unlinked; restore connectivity before
+relinking. Phone setup similarly distinguishes missing cloud status from a
+cloud reply that lacks phone-relay support, and hides already enrolled phones
+from the enrollment choices.
 Complete configuration validation and restart HA before linking: if HA hasn't
 loaded its Alexa endpoints, the OAuth approval can succeed but Alexa's
 subsequent authorization/discovery commands fail. The app log reports the

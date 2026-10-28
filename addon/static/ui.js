@@ -173,10 +173,10 @@ if (requests) {
       connection.classList.toggle("online", state.connected);
       connection.classList.toggle("offline", !state.connected);
       document.querySelector("#connection-label").textContent = state.connected ? "Relay connected" : "Relay disconnected";
-      const signature = JSON.stringify([state.links, state.grants]);
+      const signature = JSON.stringify([state.account_status, state.links, state.grants]);
       if (signature !== previous && !pendingForm) {
         requests.replaceChildren();
-        for (const [action, items] of [["approve", state.links], ["revoke", state.grants]]) {
+        for (const [action, items] of state.account_status ? [] : [["approve", state.links], ["revoke", state.grants]]) {
           for (const item of items) {
             const card = element("form", null, "link-card");
             card.method = "post";
@@ -196,7 +196,9 @@ if (requests) {
           }
         }
         if (!requests.children.length) {
-          requests.append(element("p", "Waiting for a linking request", "link-empty"));
+          requests.append(element("p", state.account_status ||
+            "Cloud status received: no linked accounts or pending requests. Start linking in Alexa if this is a new setup.",
+            "link-empty"));
         }
         previous = signature;
       }

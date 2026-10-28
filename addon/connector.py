@@ -255,6 +255,7 @@ class Connector:
                     heartbeat=60, max_msg_size=MAX_MESSAGE,
                 ) as socket:
                     self.ws, self.ready = socket, True
+                    self.last_poll = 0
                     LOGGER.info("Cloud relay connected")
                     delay = 1
                     poll = asyncio.create_task(self.poll(socket))
@@ -297,6 +298,15 @@ class Connector:
             await socket.send_json({"action": "poll", "phones": list(self.phones)})
             await asyncio.sleep(10)
 
+    def account_status(self):
+        if not self.ready:
+            return "Linked accounts unavailable while disconnected. Check the saved WSS URL and connector key; do not relink Alexa."
+        if not self.last_poll:
+            return "Connected; waiting for the first cloud status reply."
+        if time.monotonic() - self.last_poll > 30:
+            return "Cloud status is stale. Linked accounts cannot be verified; do not relink Alexa."
+        return ""
+
     async def phones_ui(self, request):
         if not self.trusted(request):
             raise web.HTTPForbidden()
@@ -335,16 +345,28 @@ class Connector:
                    "<p>Experimental: location and phone sensor sync only; no remote dashboards or service calls. "
                    "Register the official Companion app with HA on home Wi-Fi first. "
                    "Keep its internal URL and home Wi-Fi SSID configured. Set its external URL to:</p>")
-        content += "<pre>" + html.escape(self.phone_relay_url or "Waiting for updated cloud relay") + "</pre>"
+        cloud_status = self.account_status()
+        if cloud_status:
+            content += "<p role='status'>" + html.escape(cloud_status) + "</p>"
+        elif not self.phone_relay_url:
+            content += ("<p>Cloud replied without a phone relay URL. Update the AWS relay and verify "
+                        "its HTTP_URL setting; updating this add-on alone does not update AWS.</p>")
+        if self.phone_relay_url:
+            content += "<pre>" + html.escape(self.phone_relay_url) + "</pre>"
         content += ("<p>Enable Always/background location permission. Associate the existing phone tracker with "
                     "your person in HA. Test on cellular with the phone locked before relying on automations. "
                     "A missed update leaves the last known location; it does not mean away.</p>")
+        content += ("<p>Refresh this page to update status. The ten-second cloud poll is not a GPS interval. "
+                    "Location receipt times reset when the connector restarts and do not prove GPS freshness.</p>")
         for key, phone in self.phones.items():
-            status = "Cloud enrolled" if self.ready and key in self.synced_phones else "Waiting for cloud sync"
+            status = "Cloud enrolled" if not cloud_status and key in self.synced_phones else "Waiting for cloud sync"
             updated = self.phone_updates.get(key)
             age = f"; last location accepted {int(time.time() - updated)} seconds ago" if updated else "; no location received this session"
             content += ("<h2>" + html.escape(phone["name"]) + "</h2><p>" + status + age + "</p>"
-                        f"<form method='post'><input type='hidden' name='csrf' value='{self.csrf}'>"
+                        + ("<p>Enrollment is not delivery. From local HA, send request_location_update using "
+                           "this phone's notify.mobile_app action while its Wi-Fi is off, then refresh here. "
+                           "Check the tracker coordinates in HA to confirm application.</p>" if not updated else "")
+                        + f"<form method='post'><input type='hidden' name='csrf' value='{self.csrf}'>"
                         f"<input type='hidden' name='id' value='{key}'>"
                         "<input type='hidden' name='action' value='remove'>"
                         "<button>Revoke phone</button></form>")
@@ -354,6 +376,8 @@ class Connector:
         try:
             candidates = await self.ha("GET", "/api/alexa_device_endpoints/phones")
             for candidate in candidates:
+                if hashlib.sha256(candidate["webhook_id"].encode()).hexdigest() in self.phones:
+                    continue
                 content += (f"<form method='post'><input type='hidden' name='csrf' value='{self.csrf}'>"
                             f"<input type='hidden' name='webhook_id' value='{html.escape(candidate['webhook_id'], quote=True)}'>"
                             f"<input type='hidden' name='name' value='{html.escape(candidate['name'], quote=True)}'>"
@@ -522,14 +546,15 @@ class Connector:
             LOGGER.warning("Dashboard: %s", " ".join(warnings))
         return web.Response(
             text=dashboard(states, registry, selected, self.csrf, self.ready, self.links, self.grants,
-                           configuration, " ".join(warnings), endpoint_status),
+                           configuration, " ".join(warnings), endpoint_status, self.account_status()),
             content_type="text/html", headers=self.page_headers(),
         )
 
     async def ui_state(self, request):
         if not self.trusted(request):
             raise web.HTTPForbidden()
-        return web.json_response({"connected": self.ready, "links": self.links, "grants": self.grants},
+        return web.json_response({"connected": self.ready, "links": self.links, "grants": self.grants,
+                                  "account_status": self.account_status()},
                                  headers={"Cache-Control": "no-store"})
 
     async def static(self, request):

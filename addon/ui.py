@@ -108,7 +108,7 @@ def organize(states, registry, selected=()):
 
 
 def dashboard(states, registry, selected, csrf, connected, links, grants, configuration, warning="",
-              endpoint_status=None):
+              endpoint_status=None, account_status=""):
     areas = organize(states, registry, selected)
     all_entities = [entity for area in areas for device in area["devices"] for entity in device["entities"]]
     selected = set(selected)
@@ -151,7 +151,8 @@ def dashboard(states, registry, selected, csrf, connected, links, grants, config
                    "<div><span class='eyebrow'>ACCOUNT LINKING</span><h2 id='link-title'>A private handshake.</h2>"
                    "<p>Start linking in Alexa, then approve the matching code here.</p></div>"
                    "<div id='link-requests'>")
-    content.append(link_cards(links, grants, csrf))
+    content.append("<p class='link-empty'>" + esc(account_status) + "</p>"
+                   if account_status else link_cards(links, grants, csrf))
     content.append("</div><p class='poll-error' id='poll-error' role='status' hidden></p></section>")
     if configuration:
         content.append("<section class='notice'><div><strong>Configuration ready to check</strong>"
@@ -271,4 +272,6 @@ def link_cards(links, grants, csrf):
                 f"<input type='hidden' name='action' value='{action}'>"
                 f"<input type='hidden' name='id' value='{escape(item['id'], quote=True)}'>"
                 f"<button class='{'primary' if action == 'approve' else 'secondary'}'>{label}</button></form>")
-    return "".join(content) or "<p class='link-empty'><span class='status-dot'></span>Waiting for a linking request</p>"
+    return "".join(content) or ("<p class='link-empty'><span class='status-dot'></span>"
+                               "Cloud status received: no linked accounts or pending requests. "
+                               "Start linking in Alexa if this is a new setup.</p>")
