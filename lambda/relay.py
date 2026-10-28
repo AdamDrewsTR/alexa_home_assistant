@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from decimal import Decimal
@@ -22,6 +23,33 @@ MAX_MESSAGE = 28_000
 MAX_RESPONSE = 256_000
 RESPONSE_CHUNK = 12_000
 PARAMETERS = {}
+PHONE_TYPES = {"update_location", "get_config", "get_zones", "update_registration",
+               "register_sensor", "update_sensor_states"}
+
+
+def phone_http(event):
+    webhook = (event.get("pathParameters") or {}).get("webhook_id", "")
+    if not isinstance(webhook, str) or not re.fullmatch(r"[a-f0-9]{64}", webhook):
+        return oauth_error("phone_not_enrolled", 403)
+    connection, phones = get("connection"), get("phones")
+    if not connection or not phones or phones["connection"] != connection["connection"]:
+        return oauth_error("phone_unavailable", 503)
+    if digest(webhook) not in phones["phones"]:
+        return oauth_error("phone_not_enrolled", 403)
+    raw = event.get("body") or ""
+    if len(raw.encode()) > 22_000:
+        return oauth_error("payload_too_large", 413)
+    if event.get("isBase64Encoded"):
+        raw = base64.b64decode(raw, validate=True).decode()
+    payload = json.loads(raw)
+    if (not isinstance(payload, dict) or not isinstance(payload.get("type"), str)
+            or payload["type"] not in PHONE_TYPES
+            or len(json.dumps(payload).encode()) > 20_000):
+        return oauth_error("unsupported_phone_request", 400)
+    result = forward(connection, secrets.token_hex(16),
+                     {"phone": digest(webhook), "event": payload,
+                      "expires": int(time.time()) + 10})
+    return reply(result["status"], result.get("body", {}))
 
 
 @cache
@@ -121,6 +149,8 @@ def issue(client, grant):
 
 def http(event):
     route = event["routeKey"]
+    if route == "POST /api/webhook/{webhook_id}":
+        return phone_http(event)
     params = event.get("queryStringParameters") or {}
     if len(json.dumps(params)) > 8192 or len(event.get("body") or "") > 8192:
         return oauth_error("invalid_request", 413)
@@ -242,10 +272,17 @@ def socket(event):
     body = json.loads(event.get("body") or "{}")
     action = body.get("action")
     if action == "poll":
+        phones = body.get("phones", [])
+        if (not isinstance(phones, list) or len(phones) > 20
+                or not all(isinstance(phone, str) and re.fullmatch(r"[a-f0-9]{64}", phone)
+                           for phone in phones)):
+            return {"statusCode": 400}
+        put("phones", 120, connection=connection, phones=phones)
         links = [{"id": item["pk"], "code": item["display"], "client": item["client"]}
                  for item in scan("link") if not item.get("approved")]
         grants = [{"id": item["pk"], "client": item["client"]} for item in scan("grant")]
-        send(connection, {"type": "links", "links": links, "grants": grants})
+        send(connection, {"type": "links", "links": links, "grants": grants,
+                          "phones": phones, "phone_relay_url": os.environ.get("HTTP_URL", "")})
     elif action == "approve":
         key = body.get("id", "")
         link = get(key) if key.startswith("link#") else None
@@ -307,6 +344,13 @@ def invoke(event):
     message_id = directive.get("header", {}).get("messageId") or payload.get("request", {}).get("requestId")
     request_id = (digest(event["client_id"] + ":" + message_id)[:32]
                   if isinstance(message_id, str) else secrets.token_hex(16))
+    result = forward(connection, request_id, {"path": path, "event": payload})
+    LOGGER.info("Alexa relay completed: HTTP %s in %.0f ms",
+                result["status"], (time.monotonic() - started) * 1000)
+    return result
+
+
+def forward(connection, request_id, message):
     key = "request#" + request_id
     created = False
     try:
@@ -321,8 +365,7 @@ def invoke(event):
         if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
     if created:
-        send(connection["connection"], {"type": "request", "id": request_id,
-                                        "path": path, "event": payload})
+        send(connection["connection"], {"type": "request", "id": request_id, **message})
     deadline = time.monotonic() + 4.5
     while time.monotonic() < deadline:
         response = get(key)
@@ -331,12 +374,9 @@ def invoke(event):
                                        for index in range(response["total"])))
             if not isinstance(result, dict) or type(result.get("status")) is not int:
                 raise ValueError("Invalid connector response")
-            LOGGER.info("Alexa relay completed: HTTP %s in %.0f ms",
-                        result["status"], (time.monotonic() - started) * 1000)
             return result
         time.sleep(0.15)
-    LOGGER.error("Alexa relay response deadline exceeded after %.0f ms",
-                 (time.monotonic() - started) * 1000)
+    LOGGER.error("Relay response deadline exceeded")
     return {"status": 504}
 
 

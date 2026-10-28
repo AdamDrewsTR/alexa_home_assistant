@@ -1,6 +1,8 @@
 """Run separately with HA 2026.10.3 and Python 3.14; uses real adapters and handlers."""
 
 import asyncio
+import json
+import logging
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +25,7 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.setup import async_setup_component
 
-from addon.device_component import CONFIG_SCHEMA, DeviceConfig, DeviceView
+from addon.device_component import CONFIG_SCHEMA, DeviceConfig, DeviceView, PhoneRegistrationsView
 
 
 class NativeDeviceTests(unittest.IsolatedAsyncioTestCase):
@@ -371,9 +373,76 @@ class NativeDeviceTests(unittest.IsolatedAsyncioTestCase):
         with patch("homeassistant.setup.async_process_deps_reqs", new_callable=AsyncMock):
             self.assertTrue(await async_setup_component(self.hass, "alexa_device_endpoints", raw))
         views = [call.args[0] for call in self.hass.http.register_view.call_args_list]
-        self.assertEqual({view.url for view in views}, {"/api/alexa/smart_home", "/api/alexa_device_endpoints"})
+        self.assertEqual({view.url for view in views}, {
+            "/api/alexa/smart_home", "/api/alexa_device_endpoints", "/api/alexa_device_endpoints/phones"})
         self.assertTrue(all(view.requires_auth for view in views))
         self.assertIn("alexa_device_endpoints", self.hass.config.components)
+
+    async def test_phone_registration_list_is_admin_only_and_excludes_other_secrets(self):
+        from aiohttp.web import HTTPForbidden
+
+        entry = Mock(title="Phone", data={"device_name": "Phone", "webhook_id": "a" * 64,
+                                         "secret": "must-stay-local", "user_id": "private-user"})
+        self.hass.config_entries.async_entries.return_value = [entry]
+        view = PhoneRegistrationsView(self.hass)
+        with self.assertRaises(HTTPForbidden):
+            await view.get({"hass_user": Mock(is_admin=False)})
+        response = await view.get({"hass_user": Mock(is_admin=True)})
+        self.assertEqual(json.loads(response.body), [{"name": "Phone", "webhook_id": "a" * 64}])
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.hass.config_entries.async_entries.assert_called_once_with("mobile_app")
+
+    async def test_native_mobile_app_encrypted_location_updates_normal_tracker(self):
+        from nacl.encoding import Base64Encoder
+        from nacl.secret import SecretBox
+        from homeassistant.components.mobile_app.const import (
+            DATA_CONFIG_ENTRIES, DATA_DELETED_IDS, DOMAIN as MOBILE_DOMAIN,
+        )
+        from homeassistant.components.mobile_app.device_tracker import MobileAppEntity
+        from homeassistant.components.mobile_app.webhook import handle_webhook
+        from homeassistant.helpers.entity_component import EntityComponent
+
+        webhook = "a" * 64
+        secret = "b" * 64
+        entry = ConfigEntry(
+            domain=MOBILE_DOMAIN, title="Phone", version=1, minor_version=1,
+            data={"device_name": "Phone", "device_id": "phone-id", "webhook_id": webhook,
+                  "supports_encryption": True, "secret": secret, "no_legacy_encryption": True,
+                  "user_id": "test-user", "manufacturer": "Apple", "model": "Phone",
+                  "os_version": "test", "app_id": "test-app"},
+            options={}, source="registration", unique_id=None,
+            discovery_keys=MappingProxyType({}), subentries_data=[])
+        self.hass.config_entries.async_get_entry.return_value = entry
+        self.hass.data[MOBILE_DOMAIN] = {
+            DATA_CONFIG_ENTRIES: {webhook: entry}, DATA_DELETED_IDS: [],
+        }
+        component = EntityComponent(logging.getLogger(__name__), "device_tracker", self.hass)
+        component._platforms["device_tracker"].config_entry = entry
+        entity = MobileAppEntity(entry)
+        await component.async_add_entities([entity])
+        payload = {"location_name": "home", "battery": 75}
+        encrypted = SecretBox(bytes.fromhex(secret)).encrypt(
+            json.dumps(payload).encode(), encoder=Base64Encoder).decode()
+
+        async def handler(request):
+            return await handle_webhook(self.hass, webhook, request)
+
+        app = web.Application()
+        app.router.add_post("/api/webhook/" + webhook, handler)
+        server = TestServer(app)
+        await server.start_server()
+        self.addAsyncCleanup(server.close)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(server.make_url("/api/webhook/" + webhook), json={
+                "type": "update_location", "encrypted": True, "encrypted_data": encrypted,
+            }) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(await response.json(), {})
+        await self.hass.async_block_till_done()
+        state = self.hass.states.get(entity.entity_id)
+        self.assertEqual(state.state, "home")
+        self.assertEqual(state.attributes["battery_level"], 75)
+        await entity.async_remove()
 
     async def test_real_metadata_and_state_event_http_delivery_preserve_bundled_identity(self):
         self.add_entity("switch.plug", "on")

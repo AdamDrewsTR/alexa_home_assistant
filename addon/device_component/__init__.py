@@ -10,6 +10,7 @@ import re
 from uuid import uuid4
 
 from aiohttp import ClientError
+from aiohttp.web import HTTPForbidden
 
 from homeassistant.components.alexa import SMART_HOME_SCHEMA
 from homeassistant.components.alexa.auth import Auth
@@ -421,6 +422,26 @@ class DeviceStatusView(HomeAssistantView):
                           "supported_domains": sorted(set(ENTITY_ADAPTERS) | set(LOCAL_ADAPTERS))})
 
 
+class PhoneRegistrationsView(HomeAssistantView):
+    url = "/api/alexa_device_endpoints/phones"
+    name = "api:alexa_device_endpoints:phones"
+
+    def __init__(self, hass):
+        self.hass = hass
+
+    async def get(self, request):
+        if not request["hass_user"].is_admin:
+            raise HTTPForbidden()
+        response = self.json([
+            {"name": entry.data.get("device_name", entry.title),
+             "webhook_id": entry.data["webhook_id"]}
+            for entry in self.hass.config_entries.async_entries("mobile_app")
+            if entry.data.get("webhook_id")
+        ])
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 async def async_setup(hass, config):
     if "smart_home" in (config.get("alexa") or {}):
         LOGGER.error("Remove built-in alexa.smart_home before enabling alexa_device_endpoints; both own the same API")
@@ -430,6 +451,7 @@ async def async_setup(hass, config):
     hass.data[DOMAIN] = settings
     hass.http.register_view(DeviceView(settings))
     hass.http.register_view(DeviceStatusView(settings))
+    hass.http.register_view(PhoneRegistrationsView(hass))
     for event_type in (EVENT_STATE_CHANGED, "entity_registry_updated", "device_registry_updated"):
         hass.bus.async_listen(event_type, settings.changed)
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, settings.changed)

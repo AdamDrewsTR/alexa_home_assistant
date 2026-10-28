@@ -124,7 +124,7 @@ def dashboard(states, registry, selected, csrf, connected, links, grants, config
         "<div class='shell'><header class='topbar'><a class='brand' href=''>",
         "<span class='brand-mark'>" + icon("home") + "</span>",
         "<span>alexa<span class='brand-divider'> / </span><strong>home assistant</strong></span></a>",
-        "<div class='topbar-right'><span class='private-badge'>Outbound only</span>",
+        "<div class='topbar-right'><a href='phones'>Phone location</a><span class='private-badge'>Outbound only</span>",
         f"<span class='connection {'online' if connected else 'offline'}' id='connection-status'>",
         "<span class='status-dot'></span><span id='connection-label'>",
         "Relay connected" if connected else "Relay disconnected",

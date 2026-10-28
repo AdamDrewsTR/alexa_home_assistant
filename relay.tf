@@ -118,6 +118,7 @@ resource "aws_lambda_function" "relay" {
       OAUTH_PARAMETER     = "/${var.name}/oauth-secret"
       CLIENT_IDS          = jsonencode([for skill in values(local.skills) : skill.skill_id])
       VENDOR_ID           = var.alexa_vendor_id
+      HTTP_URL            = aws_apigatewayv2_api.http[0].api_endpoint
     }
   }
   lifecycle {
@@ -177,7 +178,7 @@ resource "aws_apigatewayv2_integration" "http" {
 }
 
 resource "aws_apigatewayv2_route" "http" {
-  for_each  = var.relay_enabled ? toset(["GET /authorize", "GET /status", "POST /token"]) : toset([])
+  for_each  = var.relay_enabled ? toset(["GET /authorize", "GET /status", "POST /token", "POST /api/webhook/{webhook_id}"]) : toset([])
   api_id    = aws_apigatewayv2_api.http[0].id
   route_key = each.key
   target    = "integrations/${aws_apigatewayv2_integration.http[0].id}"

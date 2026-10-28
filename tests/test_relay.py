@@ -100,6 +100,64 @@ class RelayTests(unittest.TestCase):
         response = relay.handler({"routeKey": "POST /token", "body": urlencode(body)}, None)
         return response["statusCode"], json.loads(response["body"])
 
+    def phone(self, payload, webhook="a" * 64, **overrides):
+        return relay.handler({
+            "routeKey": "POST /api/webhook/{webhook_id}",
+            "pathParameters": {"webhook_id": webhook}, "body": json.dumps(payload),
+            **overrides,
+        }, None)
+
+    def test_phone_roundtrip_requires_connector_enrollment_and_preserves_encryption(self):
+        webhook = "a" * 64
+        self.assertEqual(self.phone({"type": "update_location"})["statusCode"], 503)
+        self.connect()
+        with patch.object(relay, "send"):
+            self.socket({"action": "poll", "phones": [relay.digest(webhook)]})
+        payload = {"type": "update_location", "encrypted": True, "encrypted_data": "opaque-ciphertext"}
+
+        def respond(connection, message):
+            self.assertEqual(message["phone"], relay.digest(webhook))
+            self.assertNotIn("path", message)
+            self.assertNotIn(webhook, json.dumps(message))
+            self.assertEqual(message["event"], payload)
+            self.assertGreater(message["expires"], time.time())
+            self.respond(message["id"], {"status": 200, "body": {}})
+
+        with patch.object(relay, "send", side_effect=respond):
+            self.assertEqual(self.phone(payload)["statusCode"], 200)
+        stored = str(relay.table().scan()["Items"])
+        self.assertNotIn(webhook, stored)
+        self.assertNotIn("opaque-ciphertext", stored)
+        self.assertEqual(self.phone(payload, webhook="b" * 64)["statusCode"], 403)
+        with patch.object(relay, "send"):
+            self.socket({"action": "poll", "phones": []})
+        self.assertEqual(self.phone(payload)["statusCode"], 403)
+
+    def test_phone_scope_payload_limits_and_expired_enrollment(self):
+        self.connect()
+        with patch.object(relay, "send"):
+            self.socket({"action": "poll", "phones": [relay.digest("a" * 64)]})
+            for payload in (
+                {"type": "call_service", "data": {"domain": "lock", "service": "unlock"}},
+                {"type": "fire_event"}, {"type": "render_template"}, {"type": []}, [],
+            ):
+                self.assertEqual(self.phone(payload)["statusCode"], 400)
+            self.assertEqual(self.phone({"type": "update_location", "data": "x" * 23_000})["statusCode"], 413)
+            self.assertEqual(self.phone({}, webhook="../auth/token")["statusCode"], 403)
+            self.assertEqual(self.socket({"action": "poll", "phones": ["not-a-hash"]})["statusCode"], 400)
+            self.assertEqual(self.socket({"action": "poll", "phones": ["a" * 64] * 21})["statusCode"], 400)
+        relay.table().update_item(
+            Key={"pk": "phones"}, UpdateExpression="SET expires = :expires",
+            ExpressionAttributeValues={":expires": int(time.time()) - 1})
+        self.assertEqual(self.phone({"type": "update_location"})["statusCode"], 503)
+
+    def test_phone_enrollment_cannot_transfer_to_a_replacement_connection(self):
+        self.connect()
+        with patch.object(relay, "send"):
+            self.socket({"action": "poll", "phones": [relay.digest("a" * 64)]})
+        relay.put("connection", 7200, connection="replacement")
+        self.assertEqual(self.phone({"type": "update_location"})["statusCode"], 503)
+
     def test_account_link_refresh_and_revoke(self):
         code = self.approved_code()
         status, tokens = self.token(code=code)

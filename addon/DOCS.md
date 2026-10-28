@@ -1,5 +1,45 @@
 # Alexa Outbound Connector
 
+## Companion phone location (experimental)
+
+Version **0.3.0** adds an optional location relay for up to **20 phones** using
+the official Home Assistant Companion app. Each phone is enrolled and revoked
+independently and keeps its existing tracker/person association. No VPN,
+router port forwarding, extra tracking app, or remote HA frontend is required.
+
+Deploy the updated Terraform relay, update this app, then create a new
+configuration preview, back up/apply, validate, and restart HA to install the
+updated local integration. Register each Companion app on home Wi-Fi first.
+Open **Phone location** in this app's Web UI, enroll the intended phone, and
+refresh until **Cloud enrolled** appears. The phone list requires HA
+administrator access; no credentials need to be copied manually.
+
+In the Companion app's server connection settings, retain your **Internal URL**
+and **home Wi-Fi SSID**, and set **External URL** to the HTTPS relay URL shown.
+Grant Always/background location permission and enable location sensors.
+Associate each tracker with its person in HA and use normal zone/person
+automations. An existing HA Cloud webhook can take priority over this URL.
+Remote dashboards, service calls, and remote login/token refresh are not
+supported; the internal URL remains necessary at home.
+
+The relay permits location, configuration/zones, registration updates, and phone
+sensor synchronization only. iOS encrypted payloads remain encrypted through AWS;
+the checked Android release uses HTTPS without payload encryption. Do not share
+webhook URLs or enable AWS request-body logging. Enrollment is stored locally
+with owner-only permissions; only ID hashes are synced over the connector.
+Cloud enrollment expires within two minutes without polling. Revocation is
+enforced locally immediately.
+
+There is no offline queue or location history in AWS. A missed update leaves
+HA's last-known location, not an automatic away state. App retries may deliver
+delayed measurements. The status shows when a location request was last accepted
+by HA this connector session, not a guarantee of current GPS freshness. Test
+locked-phone cellular updates, token expiry, connector restart, and physical
+zone transitions before relying on automations. Use additional presence signals
+and never GPS alone to unlock a door.
+
+## Alexa setup
+
 Provision AWS and Alexa with `bootstrap.py` from the repository first. Its
 `install-ha` step configures this app automatically after local HA consent.
 
@@ -61,7 +101,7 @@ Update both the AWS relay (review/apply the Terraform plan) and connector:
 version 0.2.0 uses bounded response fragments for larger discovery results.
 Mixed relay/connector versions cannot complete commands. Publish the committed
 code to the app repository's default branch, then in **Settings > Apps > App
-store** check for updates and update this app to **0.2.3**. The wizard's
+store** check for updates and update this app to **0.3.0**. The wizard's
 `install-ha` command does not upgrade an already installed app.
 See the [repository upgrade instructions](../README.md#upgrading-an-existing-ha-os-installation)
 for the exact Terraform commands. Check Alexa routines referencing old devices

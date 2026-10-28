@@ -32,11 +32,85 @@ Browser -> AWS account-linking page -> approval in local connector UI
 ```
 
 API Gateway holds the WebSocket; no EC2 server, load balancer, NAT gateway, or
-third-party tunnel is needed. The public HTTP API serves only account-linking
-routes, not HA's frontend. The connector accepts only `/api/alexa` and
-`/api/alexa/smart_home`, with a fixed local destination. A cloud deployment
+third-party tunnel is needed. The public HTTP API serves account-linking routes
+and individually enrolled Companion phone webhooks, not HA's frontend.
+The connector accepts only `/api/alexa`,
+`/api/alexa/smart_home`, and the restricted phone messages described below,
+with fixed local destinations. A cloud deployment
 compromise could still issue commands through these permitted endpoints:
 protect the AWS account and limit exposed HA entities.
+
+### Companion phone location (experimental, 0.3.0)
+
+The official HA Companion app can send location to this AWS relay without a VPN,
+router port forwarding, OwnTracks, or a modified phone app:
+
+```text
+HA Companion app -> HTTPS phone webhook -> existing outbound connector
+                                        -> local HA mobile_app -> person/zone automations
+```
+
+This is **location and phone-sensor synchronization, not remote dashboard access**.
+The installed app must already be registered with HA locally. Source compatibility
+was checked against Companion iOS and Android 2026.10.1 and HA Core 2026.10.3;
+locked-phone cellular delivery still requires live acceptance testing.
+
+1. Deploy the updated Terraform relay after reviewing its plan. Update the HA
+   connector app to **0.3.0**. In its Web UI, create a new entity configuration
+   preview, back up/apply it, validate, and explicitly restart HA. This installs
+   the updated local integration's administrator-only phone-registration view.
+   Existing Alexa entity selections can be reused; this does not require Alexa
+   relinking.
+2. On home Wi-Fi, register the official Companion app with your local HA server
+   if it is not already registered.
+3. Open **Phone location** in the connector Web UI and enroll that phone.
+   Wait until it says **Cloud enrolled** (refresh the page after a few seconds).
+   No HA access token or webhook ID needs to be copied by hand.
+4. In the Companion app's settings, select your server and edit its connection
+   settings (labels vary by OS/app version). Keep **Internal URL** set to your
+   local HA address and configure your **home Wi-Fi SSID**. Set **External URL**
+   to the HTTPS URL displayed by the connector. On iOS, the URL check uses
+   `get_config`, which this relay supports.
+5. Grant background/Always location access and enable the desired location
+   sensors; enable Precise Location for GPS-based zones. Associate the existing
+   `device_tracker` with your HA person. Use ordinary HA person/zone automations.
+6. Disable phone Wi-Fi, confirm the connector records a received location, then
+   test arrival/departure with the phone locked. Verify again after the HA login
+   access token has expired and after restarting the connector. Remote dashboards
+   and remote HA login/token refresh are intentionally unavailable.
+
+An existing HA Cloud cloudhook can take priority over the external URL; this
+feature does not replace or rewrite HA Cloud configuration. The app must use the
+internal URL at home for dashboards, registration, and authentication maintenance.
+If the phone is re-registered or HA is restored, revoke the old enrollment and
+enroll its current registration.
+
+Only `update_location`, `get_config`, `get_zones`, `update_registration`,
+`register_sensor`, and `update_sensor_states` are accepted. Both cloud and local
+connector enforce this allowlist; service calls, events, templates, arbitrary
+webhooks, frontend access, and authentication endpoints are not forwarded.
+Phone enrollment is opt-in, limited to 20 registered devices, persisted locally
+with owner-only permissions, and revocable in the same UI. AWS receives only
+hashes of enrolled webhook IDs over the connector; webhook IDs themselves still
+reach API Gateway as credentials in phone request URLs. Do not share those URLs.
+The local phone list requires an HA administrator.
+
+iOS webhook encryption is passed through unchanged; its location payload can
+remain encrypted until HA. The checked Android release uses HTTPS without
+payload encryption, so AWS can see its location. Logs added by this feature
+exclude webhook IDs and location payloads; do not enable request-body logging
+in AWS. Short-lived command response records can include configuration/zone data
+and sensor-registration replies. HA's own logging/recorder settings still apply.
+
+There is **no cloud location history or offline delivery queue**. Disconnected
+or expired enrollments fail explicitly; requests have a bounded response wait.
+Cloud enrollment expires after two minutes without polling. Revocation is
+enforced locally immediately, including for in-flight messages not yet processed.
+The app's own retries/queued updates can still be delayed: the native mobile-app
+location payload does not provide a trustworthy measurement timestamp for the
+relay to enforce. A last-known location is not proof of current presence;
+use local Wi-Fi presence and conservative delays, and never GPS alone to unlock.
+Phone messages share the relay's existing throttles/concurrency and AWS charges.
 
 ### One setup entry point for HA OS
 
@@ -120,7 +194,7 @@ protocol for large discovery responses. A mixed-version deployment cannot
 complete commands.
 
 In HA, open **Settings > Apps > App store**, check for updates, and update
-**Alexa Outbound Connector** to **0.2.3**. Open its Web UI, select devices,
+**Alexa Outbound Connector** to **0.3.0**. Open its Web UI, select devices,
 preview/back up/apply configuration, and approve the HA restart only after
 validation passes. Confirm **Native device endpoints active** after startup.
 Remove the old individual Alexa devices, disable/re-enable and relink the
@@ -227,8 +301,9 @@ to your LAN or Internet. HA OS uses authenticated Supervisor ingress instead.
 - WebSocket frames stay below **28 KB**. Discovery responses are split into
   bounded, request-correlated fragments and reassembled in the relay, supporting
   responses up to **256,000 bytes** without exceeding API Gateway's frame limit.
-  Larger results fail explicitly; reduce the selected capabilities. Commands
-  still use only the two fixed Alexa routes, not a general HTTP tunnel.
+  Larger results fail explicitly; reduce the selected capabilities. Alexa commands
+  use only the two fixed Alexa routes. Opt-in phone messages use only enrolled
+  webhooks and the phone message allowlist, not a general HTTP tunnel.
 - API Gateway disconnects sockets after two hours. The connector reconnects
   with backoff and polls every ten seconds (also preventing idle timeout).
   Requests are bounded; failures are surfaced, not silently replayed. Request

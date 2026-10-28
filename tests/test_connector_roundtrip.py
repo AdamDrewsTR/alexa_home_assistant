@@ -1,6 +1,7 @@
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +13,49 @@ from addon.connector import Connector
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_phone_delivery_to_local_ha_preserves_encryption_and_revocation(self):
+        webhook = "a" * 64
+        phone_id = "b" * 64
+        payload = {"type": "update_location", "encrypted": True, "encrypted_data": "opaque"}
+        calls = []
+
+        async def ha(request):
+            calls.append(await request.json())
+            return web.json_response({}, status=201 if calls[-1]["type"] == "register_sensor" else 200)
+
+        ha_app = web.Application()
+        ha_app.router.add_post("/api/webhook/" + webhook, ha)
+        ha_server = TestServer(ha_app)
+        await ha_server.start_server()
+        self.addAsyncCleanup(ha_server.close)
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {}, clear=True):
+            connector = Connector({
+                "ha_url": str(ha_server.make_url("/")).rstrip("/"), "ha_token": "local-token",
+            }, directory)
+            connector.phones[phone_id] = {"name": "Phone", "webhook_id": webhook}
+            socket = AsyncMock()
+            socket.closed = False
+            try:
+                async with aiohttp.ClientSession() as session:
+                    connector.session = session
+                    await connector.dispatch({"id": "e" * 32, "phone": phone_id, "event": payload,
+                                              "expires": int(time.time()) + 10}, socket)
+                    self.assertEqual(calls, [payload])
+                    self.assertEqual(json.loads(json.loads(socket.send_str.call_args.args[0])["data"]),
+                                     {"status": 200, "body": {}})
+                    await connector.dispatch({
+                        "id": "c" * 32, "phone": phone_id, "event": {"type": "register_sensor", "data": {}},
+                        "expires": int(time.time()) + 10,
+                    }, socket)
+                    self.assertEqual(json.loads(json.loads(socket.send_str.call_args.args[0])["data"])["status"], 200)
+                    connector.phones.clear()
+                    await connector.dispatch({"id": "f" * 32, "phone": phone_id, "event": payload,
+                                              "expires": int(time.time()) + 10}, socket)
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(json.loads(json.loads(socket.send_str.call_args.args[0])["data"])["status"], 403)
+            finally:
+                connector.db.close()
+
     async def test_expired_ha_token_is_refreshed_locally_and_oversize_reply_is_explicit(self):
         events, refreshes = [], []
 
