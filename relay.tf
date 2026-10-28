@@ -32,6 +32,9 @@ resource "aws_dynamodb_table" "relay" {
   server_side_encryption {
     enabled = true
   }
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_cloudwatch_log_group" "relay" {
@@ -135,6 +138,9 @@ resource "aws_apigatewayv2_api" "socket" {
   name                       = "${var.name}-connector"
   protocol_type              = "WEBSOCKET"
   route_selection_expression = "$request.body.action"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_apigatewayv2_integration" "socket" {
@@ -167,6 +173,9 @@ resource "aws_apigatewayv2_api" "http" {
   count         = var.relay_enabled ? 1 : 0
   name          = "${var.name}-linking"
   protocol_type = "HTTP"
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_apigatewayv2_integration" "http" {

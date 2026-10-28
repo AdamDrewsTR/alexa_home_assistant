@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from multidict import MultiDict
 
-from addon.connector import Connector
+from addon.connector import Connector, load_config
 
 
 class ConnectorTests(unittest.IsolatedAsyncioTestCase):
@@ -19,6 +19,33 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         self.connector = Connector({}, self.temp.name)
         self.connector.registries = AsyncMock(return_value={"entities": [], "devices": [], "areas": [], "floors": []})
         self.addCleanup(self.connector.db.close)
+
+    def test_config_trims_websocket_url_before_connecting(self):
+        url = "wss://relay.execute-api.us-east-1.amazonaws.com/connector"
+        path = self.connector.data_dir / "options.json"
+        for value in (url, url + " ", " \t" + url + "\n", url + "/", " " + url + "/ "):
+            with self.subTest(value=value):
+                path.write_text(json.dumps({
+                    "websocket_url": value, "connector_key": "k" * 48,
+                    "ha_url": "http://ha.local:8123", "ha_token": "local-token",
+                }))
+                self.assertEqual(load_config(path)["websocket_url"], url)
+
+    def test_config_rejects_malformed_websocket_endpoints(self):
+        path = self.connector.data_dir / "options.json"
+        for value in (None, 42, "", "https://relay.example/connector",
+                      "wss://relay.example", "wss://relay.example/wrong-stage",
+                      "wss://relay.example/connector//", "wss://relay.example/connector#fragment",
+                      "wss://relay.example/connector?token=private",
+                      "wss://user:private@relay.example/connector",
+                      "wss://relay.example/connec\ttor", "wss://relay .example/connector"):
+            with self.subTest(value=value):
+                path.write_text(json.dumps({
+                    "websocket_url": value, "connector_key": "k" * 48,
+                    "ha_url": "http://ha.local:8123", "ha_token": "local-token",
+                }))
+                with self.assertRaisesRegex(ValueError, "Connector requires a wss://"):
+                    load_config(path)
 
     async def test_command_forwarding_and_persistent_duplicate_protection(self):
         socket = AsyncMock()

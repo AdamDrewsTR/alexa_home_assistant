@@ -107,6 +107,20 @@ class WizardTests(unittest.TestCase):
             self.assertEqual(wizard.Setup(argparse.Namespace()).state, setup.state)
             self.assertEqual(setup.path.stat().st_mode & 0o777, 0o600)
 
+    def test_deploy_pins_saved_account_in_manual_terraform_variables(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(wizard, "ROOT", Path(directory)), \
+             patch.object(wizard, "confirm"), patch.object(wizard, "run") as run:
+            setup = wizard.Setup(argparse.Namespace())
+            setup.state = {"name": "ha-alexa", "aws_account": "123456789012",
+                           "vendor_id": "vendor", "region": "us-east-1"}
+            run.return_value = json.dumps({"relay": {"value": {"websocket_url": "wss://relay"}}})
+            self.assertEqual(setup.deploy(), {"relay": {"websocket_url": "wss://relay"}})
+            variables = json.loads((setup.directory / "relay.tfvars.json").read_text())
+            self.assertEqual(variables["aws_account_id"], "123456789012")
+            plan = next(call.args[0] for call in run.call_args_list
+                        if call.args[0][:2] == ["terraform", "plan"])
+            self.assertIn("-var-file=" + str(setup.directory / "relay.tfvars.json"), plan)
+
     def test_cloud_setup_uses_official_cli_not_a_terraform_shell_resource(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(wizard, "ROOT", Path(directory)):
             setup = wizard.Setup(argparse.Namespace(ask_profile="personal"))
