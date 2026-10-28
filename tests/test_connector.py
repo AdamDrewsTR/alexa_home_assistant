@@ -20,6 +20,47 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         self.connector.registries = AsyncMock(return_value={"entities": [], "devices": [], "areas": [], "floors": []})
         self.addCleanup(self.connector.db.close)
 
+    async def test_account_ui_distinguishes_unavailable_waiting_stale_and_confirmed_empty(self):
+        app = web.Application()
+        app.router.add_get("/", self.connector.ui)
+        app.router.add_get("/ui-state", self.connector.ui_state)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        self.addAsyncCleanup(client.close)
+        for ready, last_poll, expected in (
+            (False, 0, "Linked accounts unavailable while disconnected"),
+            (True, 0, "waiting for the first cloud status reply"),
+            (True, time.monotonic() - 60, "Cloud status is stale"),
+            (True, time.monotonic(), "Cloud status received: no linked accounts"),
+        ):
+            with self.subTest(expected=expected):
+                self.connector.ready, self.connector.last_poll = ready, last_poll
+                response = await client.get("/")
+                self.assertIn(expected, await response.text())
+                state = await (await client.get("/ui-state")).json()
+                if last_poll and ready and time.monotonic() - last_poll < 30:
+                    self.assertEqual(state["account_status"], "")
+                else:
+                    self.assertIn(expected, state["account_status"])
+
+    async def test_phone_help_distinguishes_connection_and_missing_cloud_support(self):
+        self.connector.ha = AsyncMock(return_value=[{"name": "Phone", "webhook_id": "a" * 64}])
+        self.connector.phones["b" * 64] = {"name": "Enrolled phone", "webhook_id": "b" * 64}
+        app = web.Application()
+        app.router.add_get("/phones", self.connector.phones_ui)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        self.addAsyncCleanup(client.close)
+        text = await (await client.get("/phones")).text()
+        self.assertIn("Linked accounts unavailable while disconnected", text)
+        self.assertNotIn("Update the AWS relay", text)
+        self.assertIn("Enrollment is not delivery", text)
+        self.assertIn("Refresh this page", text)
+        self.connector.ready = True
+        self.connector.last_poll = time.monotonic()
+        text = await (await client.get("/phones")).text()
+        self.assertIn("Cloud replied without a phone relay URL", text)
+
     def test_config_trims_websocket_url_before_connecting(self):
         url = "wss://relay.execute-api.us-east-1.amazonaws.com/connector"
         path = self.connector.data_dir / "options.json"
@@ -141,6 +182,7 @@ class ConnectorTests(unittest.IsolatedAsyncioTestCase):
         response = await client.post("/phones", data={**form, "csrf": self.connector.csrf})
         self.assertEqual(response.status, 200)
         self.assertEqual(len(self.connector.phones), 1)
+        self.assertNotIn("Enroll My phone", await response.text())
         self.assertEqual(self.connector.phones_path.stat().st_mode & 0o777, 0o600)
         key = next(iter(self.connector.phones))
         socket.send_json.assert_awaited_once_with({"action": "poll", "phones": [key]})
