@@ -250,6 +250,7 @@ class Setup:
         state = self.state
         variables = {
             "name": state["name"], "relay_enabled": True,
+            "aws_account_id": state["aws_account"],
             "alexa_vendor_id": state["vendor_id"], "aws_region": state["region"],
             "smart_home_skill_id": state.get("smart_home"),
             "custom_skill_id": state.get("custom"),

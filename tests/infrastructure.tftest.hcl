@@ -58,6 +58,14 @@ run "reject_unsupported_region" {
   expect_failures = [var.aws_region]
 }
 
+run "reject_invalid_account_id" {
+  command = plan
+  variables {
+    aws_account_id = "not-an-account"
+  }
+  expect_failures = [var.aws_account_id]
+}
+
 run "relay_without_public_ha" {
   command = plan
   variables {

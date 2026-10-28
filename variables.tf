@@ -9,6 +9,17 @@ variable "name" {
   }
 }
 
+variable "aws_account_id" {
+  description = "Expected AWS account ID. Pin this for an existing deployment to reject credentials from another account."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.aws_account_id == null ? true : can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "Provide a 12-digit AWS account ID, or null."
+  }
+}
+
 variable "aws_region" {
   description = "Alexa endpoint region for the skill locale, not your physical location."
   type        = string

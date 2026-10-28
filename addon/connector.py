@@ -572,9 +572,16 @@ class Connector:
 
 def load_config(path):
     config = json.loads(Path(path).read_text())
+    value = config.get("websocket_url")
+    if not isinstance(value, str):
+        raise ValueError("Connector requires a wss:// endpoint ending in /connector")
+    config["websocket_url"] = value.strip().removesuffix("/")
     url = urlsplit(config["websocket_url"])
-    if url.scheme != "wss" or not url.hostname or url.username or url.password or url.query:
-        raise ValueError("Connector requires a wss:// endpoint without embedded credentials")
+    if (url.scheme != "wss" or not url.hostname or url.username or url.password
+            or url.query or url.fragment or url.path != "/connector"
+            or any(character.isspace() for character in config["websocket_url"])):
+        raise ValueError("Connector requires a wss:// endpoint ending in /connector "
+                         "without credentials, query, fragment, or embedded whitespace")
     if not isinstance(config.get("connector_key"), str) or len(config["connector_key"]) < 32:
         raise ValueError("Connector key must be at least 32 characters")
     if not os.environ.get("SUPERVISOR_TOKEN") and not (

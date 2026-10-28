@@ -1,6 +1,13 @@
 # Alexa Outbound Connector
 
+See [Troubleshooting and recovery](../TROUBLESHOOTING.md) for connection errors,
+missing linked accounts, credentials, AWS deployment issues, and HA validation.
+
 ## Companion phone location (experimental)
+
+See the [phone setup and troubleshooting guide](../PHONE_LOCATION.md) for HA
+preparation, exactly where to set URLs, required home Wi-Fi and background
+location settings, and a step-by-step cellular test from a local computer.
 
 Version **0.3.0** adds an optional location relay for up to **20 phones** using
 the official Home Assistant Companion app. Each phone is enrolled and revoked
@@ -21,6 +28,12 @@ Associate each tracker with its person in HA and use normal zone/person
 automations. An existing HA Cloud webhook can take priority over this URL.
 Remote dashboards, service calls, and remote login/token refresh are not
 supported; the internal URL remains necessary at home.
+
+The connector polls AWS every ten seconds for enrollment/linking status, **not
+phone GPS updates**. Android schedules locations based on movement, zones,
+background execution, and explicit requests. Refresh the Phone location page
+manually to see its accepted-location counter. Enrollment alone does not prove
+delivery, and identical tracker data may leave HA's Last updated unchanged.
 
 The relay permits location, configuration/zones, registration updates, and phone
 sensor synchronization only. iOS encrypted payloads remain encrypted through AWS;

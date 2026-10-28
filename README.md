@@ -40,7 +40,15 @@ with fixed local destinations. A cloud deployment
 compromise could still issue commands through these permitted endpoints:
 protect the AWS account and limit exposed HA entities.
 
+For connection failures, empty account-linking panels, AWS account/state mistakes,
+credentials, and upgrade issues, see [Troubleshooting and recovery](TROUBLESHOOTING.md).
+
 ### Companion phone location (experimental, 0.3.0)
+
+See the [phone setup and troubleshooting guide](PHONE_LOCATION.md) for HA
+preparation, a setting-by-setting URL/Wi-Fi/permissions checklist, a controlled
+cellular test, status meanings, and update
+frequency. The connector's 10-second poll is **not** a phone GPS update interval.
 
 The official HA Companion app can send location to this AWS relay without a VPN,
 router port forwarding, OwnTracks, or a modified phone app:
@@ -320,6 +328,19 @@ Cloud deployment, actual HA OS Supervisor ingress, phone account-linking
 behavior, and Alexa timing remain live acceptance gates.
 
 ### Removing a deployment
+
+The wizard pins `aws_account_id` in `.setup/relay.tfvars.json`. Keep using that
+variable file for manual plans so AWS rejects credentials from a different
+account before changing resources. For older setups, set this to the original
+12-digit AWS account ID. Use separate checkouts/state and setup files for
+separate accounts; changing `AWS_PROFILE` does not switch Terraform state.
+
+The relay table and both API Gateways use Terraform `prevent_destroy` guards.
+Normal code updates preserve their data and generated URLs. Terraform refuses
+planned deletion/replacement while these guards remain in the configuration.
+For intentional teardown, explicitly remove these guards first and review the
+resulting destroy plan. They do not prevent manual AWS deletion, removal of the
+resource blocks from configuration, or deploying with lost/different state.
 
 Stop/uninstall the local connector and disable the development skills in Alexa.
 From the original checkout with its saved state, review and approve
